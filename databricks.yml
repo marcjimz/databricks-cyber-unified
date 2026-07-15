@@ -1,0 +1,283 @@
+# ============================================================================
+# Cyber360 Unified Dashboard -- Databricks Asset Bundle
+# ============================================================================
+# Native, declarative data plane -- NO imperative scripts. Everything the
+# dashboard needs is a DAB resource:
+#
+#   database_instances    -> Lakebase (managed Postgres) that serves KPI reads
+#   database_catalogs     -> registers the Lakebase DB as a UC catalog
+#   schemas / volumes     -> UC landing zone for OCSF gold + demo CSVs
+#   pipelines             -> Lakeflow Declarative Pipeline (config-driven by
+#                            cyber360.yaml): builds gold tables + UC Metric
+#                            Views + daily/rolling aggregate tables
+#   synced_database_tables-> native reverse-ETL (UC aggregate -> Lakebase)
+#   apps                  -> the FastAPI + React dashboard
+#
+# All workspace-specific values flow as DAB variables -> app.yaml env ->
+# ${VAR} placeholders resolved in cyber360.yaml at startup. Never hardcode.
+#
+# NOTE on Genie: the current Databricks CLI does not expose a `genie_spaces`
+# bundle resource, so Genie Spaces are referenced by embed URL (passed as the
+# genie_*_embed_url variables). Create/curate the spaces in the workspace and
+# point the variables at them; swapping a space stays a config edit.
+# ============================================================================
+
+bundle:
+  name: cyber360-dashboard
+
+variables:
+  catalog:
+    description: "Unity Catalog catalog for Cyber360 gold data, metric views and aggregates"
+    default: "cyber360"
+  schema:
+    description: "Unity Catalog schema for Cyber360 tables, metric views and aggregates"
+    default: "posture"
+  warehouse_id:
+    description: "SQL Warehouse ID -- used by Genie interactive drawer ONLY, never KPI reads"
+    default: ""
+  lakebase_instance:
+    description: "Lakebase (Postgres) database instance name that serves KPI reads + app state"
+    default: "cyber360-lakebase"
+  lakebase_capacity:
+    description: "Lakebase instance capacity SKU (CU_1, CU_2, CU_4, CU_8)"
+    default: "CU_1"
+  lakebase_database:
+    description: "Logical Postgres database name inside the Lakebase instance"
+    default: "cyber360"
+  load_synthetic_data:
+    description: "Gate the pipeline's demo-data ingest stage. true = load bundled OCSF CSVs; false = build views/aggregates over the customer's existing gold tables (bring-your-own-data)."
+    default: true
+  genie_identity_embed_url:
+    description: "Genie Space embed URL for the Identity & Access domain drawer"
+    default: ""
+  genie_vulnerability_embed_url:
+    description: "Genie Space embed URL for the Vulnerability Management domain drawer"
+    default: ""
+
+workspace:
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+# The pipeline source and demo CSVs are synced into the workspace so the
+# Lakeflow pipeline can reference them. cyber360.yaml is synced next to the
+# pipeline so both the app and the pipeline read the SAME config SSOT.
+sync:
+  include:
+    - pipelines/**
+    - data/**
+    - app/cyber360.yaml
+
+resources:
+  # ── Lakebase: managed Postgres that serves low-latency KPI reads + app state ──
+  database_instances:
+    cyber360_lakebase:
+      name: ${var.lakebase_instance}
+      capacity: ${var.lakebase_capacity}
+
+  # NOTE: the Lakebase Postgres DB is intentionally NOT registered as a Unity
+  # Catalog catalog. Registering it needs metastore-admin CREATE CATALOG, and the
+  # app reads Lakebase directly via Postgres OBO (not through UC), so the
+  # registration is unnecessary. Add a `database_catalogs` resource later only if
+  # you want UC governance over the synced tables AND hold CREATE CATALOG.
+
+  # ── UC landing zone for OCSF gold tables, metric views and aggregates ──
+  # PREREQUISITE: the UC catalog (${var.catalog}) must already exist and be
+  # owned/accessible by the deploying user (bring-your-own-catalog). The bundle
+  # only creates the schema inside it.
+  schemas:
+    cyber360_schema:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+      comment: "Cyber360 OCSF-aligned cybersecurity posture data, metric views and KPI aggregates"
+
+  volumes:
+    cyber360_data:
+      catalog_name: ${var.catalog}
+      schema_name: ${resources.schemas.cyber360_schema.name}
+      name: cyber360_data
+      volume_type: MANAGED
+      comment: "Bundled synthetic OCSF CSVs consumed by the pipeline's demo-load stage"
+
+  # ── Lakeflow Declarative Pipeline: gold -> metric views -> aggregate tables ──
+  # Config-driven: reads cyber360.yaml (synced next to the pipeline code) and the
+  # LOAD_SYNTHETIC_DATA flag. Materializes the generic agg_daily / agg_rollup
+  # tables (CDF-enabled, primary keys) that the synced tables reverse-ETL.
+  pipelines:
+    cyber360_pipeline:
+      name: "[${bundle.target}] cyber360-aggregates"
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.cyber360_schema.name}
+      serverless: true
+      channel: PREVIEW
+      continuous: false
+      development: true
+      configuration:
+        cyber360.catalog: ${var.catalog}
+        cyber360.schema: ${resources.schemas.cyber360_schema.name}
+        cyber360.load_synthetic_data: ${var.load_synthetic_data}
+        cyber360.data_volume: "/Volumes/${var.catalog}/${resources.schemas.cyber360_schema.name}/cyber360_data"
+      # Only the pipeline module + its lib package are pipeline SOURCE. Do NOT
+      # glob create_metric_views.py in here: it's a standalone warehouse job
+      # script (run as the chained `create_metric_views` job task) and executes
+      # `os.path.abspath(__file__)` at import, which the DLT graph-analysis exec
+      # context has no `__file__` for -- pulling it in aborts the whole pipeline
+      # update with NameError. It is still synced (sync.include: pipelines/**) so
+      # the job task can reference it.
+      libraries:
+        - glob:
+            include: pipelines/cyber360_pipeline.py
+        - glob:
+            include: pipelines/lib/**
+
+  # ── Orchestration job: pipeline (gold + aggregates) -> UC Metric Views ──
+  # `CREATE ... VIEW WITH METRICS` is UC DDL that a declarative pipeline cannot
+  # run, so metric-view creation is a second task chained after the pipeline and
+  # executed against the SQL warehouse (var.warehouse_id). Both are config-driven
+  # by cyber360.yaml. Run the whole data plane with:
+  #   databricks bundle run cyber360_data_plane -t dev
+  jobs:
+    cyber360_data_plane:
+      name: "[${bundle.target}] cyber360-data-plane"
+      tasks:
+        - task_key: build_aggregates
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.cyber360_pipeline.id}
+        - task_key: create_metric_views
+          depends_on:
+            - task_key: build_aggregates
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/pipelines/create_metric_views.py
+            parameters:
+              - "--catalog"
+              - "${var.catalog}"
+              - "--schema"
+              - "${resources.schemas.cyber360_schema.name}"
+              - "--warehouse-id"
+              - "${var.warehouse_id}"
+      environments:
+        - environment_key: default
+          spec:
+            client: "2"
+
+  # ── Native reverse-ETL: UC aggregate tables -> Lakebase Postgres (read-only) ──
+  # Two generic tables cover every domain/measure with zero schema change:
+  #   agg_daily  -> daily-grain measure series (trend/area charts)
+  #   agg_rollup -> 30/60/90d windowed values + period-over-period deltas (tiles)
+  synced_database_tables:
+    cyber360_agg_daily:
+      name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily_synced
+      database_instance_name: ${resources.database_instances.cyber360_lakebase.name}
+      logical_database_name: ${var.lakebase_database}
+      spec:
+        source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily
+        primary_key_columns:
+          - domain
+          - day
+          - measure
+        scheduling_policy: SNAPSHOT
+        create_database_objects_if_missing: true
+        new_pipeline_spec:
+          storage_catalog: ${var.catalog}
+          storage_schema: ${resources.schemas.cyber360_schema.name}
+
+    cyber360_agg_rollup:
+      name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup_synced
+      database_instance_name: ${resources.database_instances.cyber360_lakebase.name}
+      logical_database_name: ${var.lakebase_database}
+      spec:
+        source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup
+        primary_key_columns:
+          - domain
+          - period
+          - measure
+        scheduling_policy: SNAPSHOT
+        create_database_objects_if_missing: true
+        new_pipeline_spec:
+          storage_catalog: ${var.catalog}
+          storage_schema: ${resources.schemas.cyber360_schema.name}
+
+  # ── The dashboard app (FastAPI + built React SPA) ──
+  apps:
+    cyber360_app:
+      name: "cyber360-dashboard"
+      description: "Cyber360 Unified Cybersecurity Posture Dashboard"
+      source_code_path: ./app
+
+      # Bind the Lakebase instance as an app resource. This is what makes the
+      # SP-based data plane work end to end:
+      #   1. grants the app SERVICE PRINCIPAL CAN_CONNECT_AND_CREATE on the
+      #      instance (without this the SP's minted token is rejected), and
+      #   2. makes the CONTROL PLANE inject PGHOST / PGUSER / PGPORT / PGDATABASE
+      #      into the app runtime -- PGUSER is the SP identity the Lakebase pool
+      #      authenticates as.
+      # KPI reads therefore run as the app SP (NOT per-user OBO); interactive
+      # Genie / SQL Warehouse access stays OBO. No Postgres host is hardcoded.
+      resources:
+        - name: "lakebase"
+          database:
+            instance_name: ${resources.database_instances.cyber360_lakebase.name}
+            database_name: ${var.lakebase_database}
+            permission: "CAN_CONNECT_AND_CREATE"
+
+      # App config (command + env) is BUNDLE-MANAGED so every workspace value
+      # flows from DAB variables via ${var.*} / ${resources.*} substitution --
+      # nothing is hardcoded, and the control plane writes app.yaml at deploy
+      # time. (A static app.yaml cannot do ${var} substitution, which is why the
+      # env lives here and app/app.yaml is intentionally absent.)
+      config:
+        command:
+          - /bin/sh
+          - -c
+          - pip install -e . && uvicorn main:app --host 0.0.0.0 --port $DATABRICKS_APP_PORT
+        env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
+          # Provider selection: "seed" (zero workspace deps) or "lakebase".
+          - name: CYBER360_PROVIDER
+            value: "lakebase"
+          # Genie interactive drawer ONLY (OBO), never KPI reads.
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: ${var.warehouse_id}
+          - name: CYBER360_CATALOG
+            value: ${var.catalog}
+          - name: CYBER360_SCHEMA
+            value: ${resources.schemas.cyber360_schema.name}
+          # Lakebase instance + logical database (also injected as PG* by the
+          # bound resource above; kept for the SP credential mint + local dev).
+          - name: LAKEBASE_INSTANCE_NAME
+            value: ${resources.database_instances.cyber360_lakebase.name}
+          - name: LAKEBASE_DATABASE_NAME
+            value: ${var.lakebase_database}
+          # GENIE_*_EMBED_URL are intentionally omitted while unset: the Apps API
+          # rejects an env var whose value resolves empty, and the genie_*_embed_url
+          # vars default to "". cyber360.yaml resolves the missing vars to "" (Genie
+          # drawer simply stays unconfigured). When you wire real Genie spaces, add
+          # them back here:
+          #   - name: GENIE_IDENTITY_EMBED_URL
+          #     value: ${var.genie_identity_embed_url}
+          #   - name: GENIE_VULNERABILITY_EMBED_URL
+          #     value: ${var.genie_vulnerability_embed_url}
+
+      permissions:
+        - level: CAN_MANAGE
+          user_name: ${workspace.current_user.userName}
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://fevm-marcjimz-demo-ws-2.cloud.databricks.com
+
+  prod:
+    mode: production
+    workspace:
+      host: https://fevm-marcjimz-demo-ws-2.cloud.databricks.com
+    resources:
+      apps:
+        cyber360_app:
+          permissions:
+            - level: CAN_MANAGE
+              user_name: ${workspace.current_user.userName}
+            - level: CAN_USE
+              group_name: "cyber360-users"

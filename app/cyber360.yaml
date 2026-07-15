@@ -1,0 +1,368 @@
+# ============================================================================
+# Cyber360 Dashboard Configuration
+# ============================================================================
+# This file drives every aspect of the dashboard: domains, measures, KPIs,
+# Genie Spaces, and data sources. Customers change THIS file to point at
+# their own data -- no code changes required.
+#
+# Environment variable placeholders (${VAR_NAME}) are resolved at startup
+# from the app's environment, which is populated by DAB variables.
+# ============================================================================
+
+# --- Organization identity ---
+org:
+  name: "Acme Health"
+  logo_path: "org-logo.png"
+
+# --- Data source configuration ---
+data_source:
+  catalog: "${CYBER360_CATALOG}"
+  schema: "${CYBER360_SCHEMA}"
+  warehouse_id: "${DATABRICKS_WAREHOUSE_ID}"   # Genie interactive drawer ONLY, never KPI reads
+  # "seed" = in-memory OCSF synthesis (zero workspace deps, demo/local).
+  # "lakebase" = read synced KPI aggregates from Lakebase Postgres via OBO.
+  provider: "${CYBER360_PROVIDER:-seed}"
+
+# --- Lakebase configuration ---
+# Serves two roles:
+#   1. Read-only synced KPI aggregates (populated by synced_database_tables).
+#   2. App-owned read-write state (preferences/chats/sessions) via idempotent
+#      session-bootstrap migrations.
+lakebase:
+  enabled: true
+  instance_name: "${LAKEBASE_INSTANCE_NAME}"
+  database_name: "${LAKEBASE_DATABASE_NAME:-cyber360}"
+  # Postgres schema the app service principal owns for its read-write state
+  # tables (created + owned by the app at startup; no external grant needed).
+  app_schema: "cyber360_app"
+  # Synced aggregate tables (read-only, produced by the reverse-ETL sync).
+  # They live in the UC/Postgres schema named by data_source.schema; the SP is
+  # granted USAGE + SELECT there.
+  synced_tables:
+    daily: "agg_daily_synced"
+    rollup: "agg_rollup_synced"
+  # App-owned state tables (read-write, created by session-bootstrap migrations).
+  state_tables:
+    preferences: "cyber360_preferences"
+    chats: "cyber360_chats"
+    sessions: "cyber360_sessions"
+
+# --- Data loading configuration ---
+data_loading:
+  enabled: true
+  target_catalog: "${CYBER360_CATALOG}"
+  target_schema: "${CYBER360_SCHEMA}"
+  load_synthetic: true
+
+# --- Feature flags ---
+features:
+  genie_enabled: true
+  soc_view_enabled: true
+  theme_toggle: true
+  lineage_popover: true
+
+# --- Executive scorecard top-line KPIs ---
+top_line_kpis:
+  - domain: identity
+    measure: mfa_adoption
+    caption: "MFA adoption"
+    trend: { direction: flat, label: "Stable" }
+
+  - domain: vulnerability
+    measure: critical_cves_open
+    caption: "Critical CVEs open"
+    trend: { direction: up, label: "+18 vs last month" }
+
+  - domain: vulnerability
+    measure: kev_unpatched
+    caption: "CISA KEV unpatched"
+    trend: { direction: down, label: "-4 vs last week" }
+
+  - domain: vulnerability
+    measure: patch_sla_compliance
+    caption: "Patch SLA compliance"
+    trend: { direction: down, label: "-5% vs target" }
+
+  - domain: identity
+    measure: pam_vault_coverage
+    caption: "PAM vault coverage"
+    trend: { direction: up, label: "+6% vs last quarter" }
+
+  - domain: vulnerability
+    measure: mean_time_to_patch
+    caption: "Mean time to patch"
+    trend: { direction: down, label: "-0.8d vs target" }
+
+# --- Security Domains ---
+domains:
+  # ────────────────────────────────────────────
+  # Identity & Access Management
+  # ────────────────────────────────────────────
+  - key: identity
+    label: "Identity & Access Management"
+    short: "Identity & Access"
+    icon: fingerprint
+    description: >-
+      Identity & Access posture across authentication, account lifecycle,
+      and privileged access management.
+
+    genie:
+      space_id: "01f02a3b4c5d6e7f8091a2b3c4d5e6f7"
+      embed_url: "${GENIE_IDENTITY_EMBED_URL}"
+      starters:
+        - "Which privileged accounts are missing MFA?"
+        - "Show orphaned accounts older than 30 days"
+        - "How has SSO adoption trended this quarter?"
+
+    health:
+      score_measures:
+        - mfa_adoption
+        - pam_vault_coverage
+        - access_recertification
+      highlights:
+        - mfa_adoption
+        - orphaned_accounts
+        - pam_vault_coverage
+
+    metric_view:
+      name: mv_identity_access
+      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.identity_access"
+      comment: >-
+        Identity & Access posture measures over authentication events,
+        account changes, and the account inventory snapshot.
+      dimensions:
+        - name: day
+          expression: "CAST(time AS DATE)"
+          comment: "Event date dimension"
+        - name: org_unit
+          expression: "actor_user_org_unit"
+          comment: "Business unit or department"
+        - name: auth_protocol
+          expression: "auth_protocol"
+          comment: "Authentication protocol (SAML, OIDC, Kerberos, LDAP)"
+        - name: is_privileged
+          expression: "is_privileged"
+          comment: "Whether the account is flagged as privileged"
+        - name: account_status
+          expression: "status"
+          comment: "Account lifecycle status"
+      measures:
+        - name: mfa_adoption
+          label: "MFA adoption"
+          expression: "SUM(IF(is_mfa, 1, 0)) / COUNT(*) * 100"
+          comment: "Share of interactive authentications satisfied with an MFA factor."
+          format: percent
+          percent_digits: 1
+          goal: higher
+          green: 99
+          amber: 95
+          caption: "Target: 100%"
+          trend: { direction: flat, label: "Stable" }
+
+        - name: privileged_accounts
+          label: "Privileged accounts (CyberArk)"
+          expression: "COUNT_IF(is_privileged = true)"
+          comment: "Count of accounts flagged privileged in the inventory."
+          format: count
+          goal: lower
+          fixed_status: amber
+          caption: "Reduction target -20%"
+
+        - name: orphaned_accounts
+          label: "Orphaned accounts"
+          expression: "COUNT_IF(owner_active = false AND status <> 'disabled')"
+          comment: "Active accounts whose owning employee is no longer in HR."
+          format: count
+          goal: lower
+          green: 10
+          amber: 50
+          caption: "30-day deactivation"
+
+        - name: sso_integration
+          label: "SSO integration (Ping)"
+          expression: "SUM(IF(via_sso, 1, 0)) / COUNT(*) * 100"
+          comment: "Percentage of authentications federated through the SSO provider."
+          format: percent
+          percent_digits: 0
+          goal: higher
+          green: 95
+          amber: 85
+          caption: "14 apps pending"
+
+        - name: pam_vault_coverage
+          label: "PAM vault coverage"
+          expression: "COUNT_IF(is_privileged AND in_pam_vault) / COUNT_IF(is_privileged) * 100"
+          comment: "Privileged accounts managed inside the PAM vault."
+          format: percent
+          percent_digits: 0
+          goal: higher
+          green: 95
+          amber: 80
+          caption: "Target: >95%"
+
+        - name: avg_provisioning
+          label: "Avg provisioning"
+          expression: "AVG(provisioning_hours) / 24"
+          comment: "Average time from account-create request to activation, in days."
+          format: days
+          goal: lower
+          green: 1
+          amber: 3
+          caption: "Target: Day-1 critical"
+
+        - name: access_recertification
+          label: "Access recertification"
+          expression: "COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY) / COUNT(*) * 100"
+          comment: "Accounts recertified within the current 90-day review cycle."
+          format: percent
+          percent_digits: 0
+          goal: higher
+          green: 95
+          amber: 85
+          caption: "Quarterly via AccessHub"
+
+        - name: dormant_admin_accounts
+          label: "Dormant admin accounts"
+          expression: "COUNT_IF(is_privileged AND last_activity < now() - INTERVAL 90 DAY)"
+          comment: "Privileged accounts with no authentication event in 90+ days."
+          format: count
+          goal: lower
+          green: 5
+          amber: 20
+          caption: "90-day review cycle"
+
+  # ────────────────────────────────────────────
+  # Vulnerability Management
+  # ────────────────────────────────────────────
+  - key: vulnerability
+    label: "Vulnerability Management"
+    short: "Vulnerability Mgmt"
+    icon: shield-alert
+    description: >-
+      Vulnerability posture across open findings, remediation SLAs,
+      and scan coverage.
+
+    genie:
+      space_id: "01f12b3c4d5e6f708192a3b4c5d6e7f8"
+      embed_url: "${GENIE_VULNERABILITY_EMBED_URL}"
+      starters:
+        - "List CISA KEV findings breaching SLA"
+        - "What assets have the most critical CVEs?"
+        - "Mean time to patch by severity this month"
+
+    health:
+      score_measures:
+        - patch_sla_compliance
+        - scan_coverage
+      highlights:
+        - critical_cves_open
+        - kev_unpatched
+        - patch_sla_compliance
+
+    metric_view:
+      name: mv_vulnerability_mgmt
+      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.vulnerability_management"
+      comment: >-
+        Vulnerability Management measures over vulnerability findings
+        and the asset scan-coverage inventory.
+      dimensions:
+        - name: day
+          expression: "CAST(first_seen AS DATE)"
+          comment: "Finding discovery date"
+        - name: severity
+          expression: "severity_id"
+          comment: "CVSS severity level"
+        - name: region
+          expression: "device_region"
+          comment: "Geographic region of the affected asset"
+        - name: asset_type
+          expression: "device_type"
+          comment: "Asset classification (Server, Workstation, etc.)"
+        - name: is_kev
+          expression: "cve_is_kev"
+          comment: "CISA Known Exploited Vulnerability catalog flag"
+        - name: finding_status
+          expression: "status_id"
+          comment: "Finding lifecycle status"
+      measures:
+        - name: critical_cves_open
+          label: "Critical CVEs open"
+          expression: "COUNT_IF(severity_id = 5 AND status_id IN (1,2))"
+          comment: "Open findings (new or in-progress) with critical CVSS severity."
+          format: count
+          goal: lower
+          green: 25
+          amber: 100
+          caption: "SLA: 15 days"
+
+        - name: high_cves_open
+          label: "High CVEs open"
+          expression: "COUNT_IF(severity_id = 4 AND status_id IN (1,2))"
+          comment: "Open findings with high CVSS severity."
+          format: count
+          goal: lower
+          green: 200
+          amber: 600
+          caption: "SLA: 30 days"
+
+        - name: kev_unpatched
+          label: "CISA KEV unpatched"
+          expression: "COUNT_IF(cve_is_kev AND status_id IN (1,2))"
+          comment: "Open findings on the CISA Known Exploited Vulnerabilities catalog."
+          format: count
+          goal: lower
+          green: 2
+          amber: 10
+          caption: "48h SLA"
+
+        - name: patch_sla_compliance
+          label: "Patch SLA compliance"
+          expression: "COUNT_IF(resolved_time <= remediation_due) / NULLIF(COUNT_IF(status_id = 4), 0) * 100"
+          comment: "Resolved findings remediated within their severity-based SLA window."
+          format: percent
+          percent_digits: 0
+          goal: higher
+          green: 95
+          amber: 85
+          caption: "Target: 95%"
+
+        - name: mean_time_to_patch
+          label: "Mean time to patch"
+          expression: "AVG(DATEDIFF(DAY, first_seen, resolved_time))"
+          comment: "Average days between first detection and remediation for resolved findings."
+          format: days
+          goal: lower
+          green: 7
+          amber: 14
+          caption: "Target: 7d"
+
+        - name: scan_coverage
+          label: "Scan coverage"
+          expression: "COUNT_IF(last_scanned >= now() - INTERVAL 30 DAY) / COUNT(*) * 100"
+          comment: "Assets with a successful vulnerability scan in the last 30 days."
+          format: percent
+          percent_digits: 0
+          goal: higher
+          green: 95
+          amber: 90
+          caption: "Agents + network"
+
+        - name: exception_count
+          label: "Exception count"
+          expression: "COUNT_IF(has_exception AND status_id = 3)"
+          comment: "Findings under an approved risk exception."
+          format: count
+          goal: lower
+          green: 15
+          amber: 40
+          caption: "6 past due"
+
+        - name: assets_unscanned
+          label: "Assets unscanned (30d)"
+          expression: "COUNT_IF(last_scanned IS NULL OR last_scanned < now() - INTERVAL 30 DAY)"
+          comment: "Assets with no successful scan in 30 days."
+          format: count
+          goal: lower
+          green: 50
+          amber: 150
+          caption: "Requires investigation"

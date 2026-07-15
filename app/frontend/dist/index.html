@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/org-logo-color.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cyber360 — Cybersecurity Posture Dashboard</title>
+    <script>
+      // Apply persisted theme before first paint to avoid a flash of the
+      // wrong color scheme. Mirrors the tiny theme store in src/hooks/useTheme.
+      (function () {
+        try {
+          var stored = localStorage.getItem("cyber360-theme")
+          var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
+          var dark = stored ? stored === "dark" : prefersDark
+          if (dark) document.documentElement.classList.add("dark")
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-C9Eida-X.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BVvz9uVu.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
