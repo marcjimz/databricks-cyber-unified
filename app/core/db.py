@@ -1,10 +1,13 @@
 """Lakebase (managed Postgres) connectivity.
 
 Lakebase is accessed as the app SERVICE PRINCIPAL, never per-user OBO. The
-Lakebase instance is bound to the app as a resource in databricks.yml, so the
-control plane (a) grants the SP CAN_CONNECT_AND_CREATE and (b) injects
-PGHOST / PGUSER / PGPORT / PGDATABASE into the runtime. Both access modes below
-mint their token with a bare ``WorkspaceClient()`` (ambient SP OAuth):
+Lakebase autoscaling branch is bound to the app as a ``postgres`` resource in
+databricks.yml, which grants the SP CAN_CONNECT_AND_CREATE on the branch. Unlike
+the legacy ``database`` binding, the autoscaling binding does NOT auto-inject
+PGHOST / PGUSER / PGPORT / PGDATABASE -- the app self-configures from
+LAKEBASE_ENDPOINT_NAME: the host is resolved via ``postgres.get_endpoint`` and
+the SP username from DATABRICKS_CLIENT_ID. Both access modes below mint their
+token with a bare ``WorkspaceClient()`` (ambient SP OAuth):
 
   * App-level pool -- app-owned STATE tables (preferences / chats / sessions)
     that the session-bootstrap migrations create and maintain. Opened at startup.
@@ -21,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -35,17 +37,45 @@ logger = logging.getLogger(__name__)
 
 _pool: AsyncConnectionPool | None = None
 
+# Endpoint host is stable for the life of the endpoint, so resolve it once via
+# the SDK and cache it -- the per-request DSN build must not pay a control-plane
+# round-trip on every connection.
+_pghost: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Credential + DSN helpers
 # ---------------------------------------------------------------------------
 
-def _lakebase_dsn(config: Cyber360Config, password: str, *, search_path: str = "") -> str:
-    """Build a psycopg conninfo string for the Lakebase instance.
+def _resolve_host(config: Cyber360Config) -> str:
+    """Resolve (and cache) the Lakebase Postgres host for the bound endpoint.
 
-    Host / user / port / dbname come from the PG* env vars the control plane
-    injects when the Lakebase instance is bound as an app resource. Falls back
-    to config-derived values for local/dev where the binding is absent.
+    The autoscaling ``postgres`` app binding does not inject PGHOST, so the host
+    is looked up from the endpoint path via ``postgres.get_endpoint``. A PGHOST
+    env var (set for local dev) short-circuits the lookup.
+    """
+    global _pghost
+    env_host = os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST")
+    if env_host:
+        return env_host
+    if _pghost:
+        return _pghost
+
+    from databricks.sdk import WorkspaceClient
+
+    ws = WorkspaceClient()
+    endpoint = ws.postgres.get_endpoint(name=config.lakebase.endpoint_name)
+    _pghost = endpoint.status.hosts.host
+    return _pghost
+
+
+def _lakebase_dsn(config: Cyber360Config, password: str, *, search_path: str = "") -> str:
+    """Build a psycopg conninfo string for the Lakebase endpoint.
+
+    Host is resolved from the bound endpoint (``_resolve_host``); the SP username
+    is its DATABRICKS_CLIENT_ID (Lakebase authenticates the SP as a Postgres role
+    named for its client id). PGUSER / PGPORT / PGDATABASE env vars override for
+    local/dev.
 
     ``search_path`` pins the session schema resolution as a libpq connection
     *option* (session-level, not transactional -- so it survives the connection
@@ -54,10 +84,10 @@ def _lakebase_dsn(config: Cyber360Config, password: str, *, search_path: str = "
     schema, while per-request reads point at the read-only synced-aggregate
     schema.
     """
-    host = os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST", "")
+    host = _resolve_host(config)
     port = os.environ.get("PGPORT", "5432")
     dbname = os.environ.get("PGDATABASE") or config.lakebase.database_name
-    user = os.environ.get("PGUSER", "")
+    user = os.environ.get("PGUSER") or os.environ.get("DATABRICKS_CLIENT_ID", "")
     dsn = (
         f"host={host} port={port} dbname={dbname} "
         f"user={user} password={password} sslmode=require"
@@ -79,9 +109,8 @@ def _sp_credential(config: Cyber360Config) -> str:
     from databricks.sdk import WorkspaceClient
 
     ws = WorkspaceClient()
-    cred = ws.database.generate_database_credential(
-        request_id=str(uuid.uuid4()),
-        instance_names=[config.lakebase.instance_name],
+    cred = ws.postgres.generate_database_credential(
+        endpoint=config.lakebase.endpoint_name,
     )
     return cred.token
 
@@ -94,7 +123,7 @@ async def init_lakebase_pool(config: Cyber360Config) -> None:
     """Open the app-level connection pool if Lakebase is enabled."""
     global _pool
 
-    if not config.lakebase.enabled or not config.lakebase.instance_name:
+    if not config.lakebase.enabled or not config.lakebase.endpoint_name:
         logger.info("Lakebase disabled or not configured -- skipping pool init")
         return
 

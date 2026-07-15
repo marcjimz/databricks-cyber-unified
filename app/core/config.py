@@ -78,7 +78,10 @@ class LakebaseStateTablesConfig(BaseModel):
 
 class LakebaseConfig(BaseModel):
     enabled: bool = False
-    instance_name: str = ""
+    # Fully-qualified autoscaling endpoint path:
+    # projects/<project>/branches/<branch>/endpoints/<endpoint>. Used to mint the
+    # SP credential and resolve the Postgres host.
+    endpoint_name: str = ""
     database_name: str = "cyber360"
     # Postgres schema the app SERVICE PRINCIPAL owns for its read-write state
     # tables. The SP has database-level CREATE (from the bound Lakebase resource's

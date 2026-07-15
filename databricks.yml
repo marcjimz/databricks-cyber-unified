@@ -4,13 +4,20 @@
 # Native, declarative data plane -- NO imperative scripts. Everything the
 # dashboard needs is a DAB resource:
 #
-#   database_instances    -> Lakebase (managed Postgres) that serves KPI reads
-#   database_catalogs     -> registers the Lakebase DB as a UC catalog
+#   postgres_projects     -> Lakebase autoscaling project (managed Postgres) that
+#                            serves KPI reads + app state. Auto-creates a
+#                            `production` branch and a `primary` RW endpoint.
+#   postgres_branches     -> the project's `production` branch (replace_existing)
+#   postgres_endpoints    -> the project's `primary` RW endpoint (replace_existing)
+#   postgres_databases    -> the logical Postgres database the app connects to
 #   schemas / volumes     -> UC landing zone for OCSF gold + demo CSVs
 #   pipelines             -> Lakeflow Declarative Pipeline (config-driven by
-#                            cyber360.yaml): builds gold tables + UC Metric
-#                            Views + daily/rolling aggregate tables
-#   synced_database_tables-> native reverse-ETL (UC aggregate -> Lakebase)
+#                            cyber360.yaml): builds gold tables + daily/rolling
+#                            aggregate tables
+#   resources/metricviews -> UC Metric View definitions (.sql), each its own
+#                            DAB-managed asset, applied by the data-plane job's
+#                            sql_task steps against the SQL warehouse
+#   postgres_synced_tables-> native reverse-ETL (UC aggregate -> Lakebase)
 #   apps                  -> the FastAPI + React dashboard
 #
 # All workspace-specific values flow as DAB variables -> app.yaml env ->
@@ -35,15 +42,32 @@ variables:
   warehouse_id:
     description: "SQL Warehouse ID -- used by Genie interactive drawer ONLY, never KPI reads"
     default: ""
-  lakebase_instance:
-    description: "Lakebase (Postgres) database instance name that serves KPI reads + app state"
+  lakebase_project:
+    description: "Lakebase autoscaling project id that serves KPI reads + app state (1-63 chars, lowercase/digits/hyphens)"
     default: "cyber360-lakebase"
-  lakebase_capacity:
-    description: "Lakebase instance capacity SKU (CU_1, CU_2, CU_4, CU_8)"
-    default: "CU_1"
+  lakebase_branch:
+    description: "Lakebase branch id -- the project's auto-created production branch"
+    default: "production"
+  lakebase_endpoint:
+    description: "Lakebase endpoint id -- the project's auto-created primary read-write endpoint"
+    default: "primary"
+  lakebase_min_cu:
+    description: "Lakebase endpoint autoscaling floor in Compute Units (min 0.5)"
+    default: 0.5
+  lakebase_max_cu:
+    description: "Lakebase endpoint autoscaling ceiling in Compute Units"
+    default: 2
   lakebase_database:
-    description: "Logical Postgres database name inside the Lakebase instance"
+    description: "Logical Postgres database name inside the Lakebase project (lowercase/digits/underscores)"
     default: "cyber360"
+  lakebase_owner_role:
+    description: >-
+      Postgres role id that OWNS the app database. Lakebase auto-creates one
+      role per Databricks identity (dots in the email localpart become hyphens),
+      e.g. marcin.jimenez@databricks.com -> `marcin-jimenez`. Set this to the
+      deploying identity's role id; it is combined with the branch path to form
+      the full projects/<p>/branches/<b>/roles/<role_id> owner reference.
+    default: "marcin-jimenez"
   load_synthetic_data:
     description: "Gate the pipeline's demo-data ingest stage. true = load bundled OCSF CSVs; false = build views/aggregates over the customer's existing gold tables (bring-your-own-data)."
     default: true
@@ -65,18 +89,64 @@ sync:
     - pipelines/**
     - data/**
     - app/cyber360.yaml
+    - resources/metricviews/**
 
 resources:
-  # ── Lakebase: managed Postgres that serves low-latency KPI reads + app state ──
-  database_instances:
+  # ── Lakebase autoscaling project: managed Postgres for KPI reads + app state ──
+  # Creating the project auto-provisions a `production` branch and a `primary`
+  # read-write endpoint; both are declared below with `replace_existing: true`
+  # so the bundle can configure (rather than duplicate) them. The endpoint
+  # autoscales between var.lakebase_min_cu and var.lakebase_max_cu -- no fixed
+  # capacity SKU (that was the discontinued provisioned model).
+  postgres_projects:
     cyber360_lakebase:
-      name: ${var.lakebase_instance}
-      capacity: ${var.lakebase_capacity}
+      project_id: ${var.lakebase_project}
+      display_name: "Cyber360 Lakebase"
+      default_endpoint_settings:
+        autoscaling_limit_min_cu: ${var.lakebase_min_cu}
+        autoscaling_limit_max_cu: ${var.lakebase_max_cu}
+
+  postgres_branches:
+    cyber360_production:
+      branch_id: ${var.lakebase_branch}
+      # parent references the project's `.name` output (resolves to
+      # projects/<project_id>); NOT `.id`.
+      parent: ${resources.postgres_projects.cyber360_lakebase.name}
+      no_expiry: true
+      is_protected: true
+      # Take over the project's implicitly-created production branch.
+      replace_existing: true
+
+  postgres_endpoints:
+    cyber360_primary:
+      endpoint_id: ${var.lakebase_endpoint}
+      # parent is the BRANCH (resolves to projects/<id>/branches/<branch_id>).
+      parent: ${resources.postgres_branches.cyber360_production.name}
+      endpoint_type: ENDPOINT_TYPE_READ_WRITE
+      autoscaling_limit_min_cu: ${var.lakebase_min_cu}
+      autoscaling_limit_max_cu: ${var.lakebase_max_cu}
+      # Take over the project's implicitly-created primary endpoint.
+      replace_existing: true
+
+  postgres_databases:
+    cyber360_db:
+      database_id: ${var.lakebase_database}
+      # parent is the BRANCH.
+      parent: ${resources.postgres_branches.cyber360_production.name}
+      # The Postgres-internal database name the app + synced tables connect to.
+      postgres_database: ${var.lakebase_database}
+      # Owner Postgres role -- required by the API in the full branch-scoped
+      # path projects/<p>/branches/<b>/roles/<role_id>. Built from the branch
+      # `.name` + the configured owner role id (see var.lakebase_owner_role).
+      # Take over any implicitly-created db of the same id so the create is
+      # deterministic across redeploys.
+      role: ${resources.postgres_branches.cyber360_production.name}/roles/${var.lakebase_owner_role}
+      replace_existing: true
 
   # NOTE: the Lakebase Postgres DB is intentionally NOT registered as a Unity
   # Catalog catalog. Registering it needs metastore-admin CREATE CATALOG, and the
-  # app reads Lakebase directly via Postgres OBO (not through UC), so the
-  # registration is unnecessary. Add a `database_catalogs` resource later only if
+  # app reads Lakebase directly via Postgres (not through UC), so the
+  # registration is unnecessary. Add a `postgres_catalogs` resource later only if
   # you want UC governance over the synced tables AND hold CREATE CATALOG.
 
   # ── UC landing zone for OCSF gold tables, metric views and aggregates ──
@@ -115,13 +185,11 @@ resources:
         cyber360.schema: ${resources.schemas.cyber360_schema.name}
         cyber360.load_synthetic_data: ${var.load_synthetic_data}
         cyber360.data_volume: "/Volumes/${var.catalog}/${resources.schemas.cyber360_schema.name}/cyber360_data"
-      # Only the pipeline module + its lib package are pipeline SOURCE. Do NOT
-      # glob create_metric_views.py in here: it's a standalone warehouse job
-      # script (run as the chained `create_metric_views` job task) and executes
-      # `os.path.abspath(__file__)` at import, which the DLT graph-analysis exec
-      # context has no `__file__` for -- pulling it in aborts the whole pipeline
-      # update with NameError. It is still synced (sync.include: pipelines/**) so
-      # the job task can reference it.
+      # Only the pipeline module + its lib package are pipeline SOURCE. Metric
+      # views are no longer built by a Python script here -- they are declarative
+      # .sql assets under resources/metricviews/, applied by the data-plane job's
+      # sql_task steps against the SQL warehouse (UC Metric View DDL cannot run
+      # inside a declarative pipeline).
       libraries:
         - glob:
             include: pipelines/cyber360_pipeline.py
@@ -130,9 +198,12 @@ resources:
 
   # ── Orchestration job: pipeline (gold + aggregates) -> UC Metric Views ──
   # `CREATE ... VIEW WITH METRICS` is UC DDL that a declarative pipeline cannot
-  # run, so metric-view creation is a second task chained after the pipeline and
-  # executed against the SQL warehouse (var.warehouse_id). Both are config-driven
-  # by cyber360.yaml. Run the whole data plane with:
+  # run, so each domain's metric view is a .sql asset under resources/metricviews/
+  # applied by a sql_task chained after the pipeline, executed on the SQL
+  # warehouse (var.warehouse_id). The .sql files carry no hardcoded location:
+  # :catalog / :schema are passed as sql_task parameters and bound via
+  # USE CATALOG/SCHEMA IDENTIFIER(...). Adding a domain = add a .sql file + a
+  # task here. Run the whole data plane with:
   #   databricks bundle run cyber360_data_plane -t dev
   jobs:
     cyber360_data_plane:
@@ -141,60 +212,68 @@ resources:
         - task_key: build_aggregates
           pipeline_task:
             pipeline_id: ${resources.pipelines.cyber360_pipeline.id}
-        - task_key: create_metric_views
+        - task_key: metric_view_identity
           depends_on:
             - task_key: build_aggregates
-          environment_key: default
-          spark_python_task:
-            python_file: ${workspace.file_path}/pipelines/create_metric_views.py
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ${workspace.file_path}/resources/metricviews/mv_identity_access.sql
+              source: WORKSPACE
             parameters:
-              - "--catalog"
-              - "${var.catalog}"
-              - "--schema"
-              - "${resources.schemas.cyber360_schema.name}"
-              - "--warehouse-id"
-              - "${var.warehouse_id}"
-      environments:
-        - environment_key: default
-          spec:
-            client: "2"
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.cyber360_schema.name}
+        - task_key: metric_view_vulnerability
+          depends_on:
+            - task_key: build_aggregates
+          sql_task:
+            warehouse_id: ${var.warehouse_id}
+            file:
+              path: ${workspace.file_path}/resources/metricviews/mv_vulnerability_mgmt.sql
+              source: WORKSPACE
+            parameters:
+              catalog: ${var.catalog}
+              schema: ${resources.schemas.cyber360_schema.name}
 
   # ── Native reverse-ETL: UC aggregate tables -> Lakebase Postgres (read-only) ──
   # Two generic tables cover every domain/measure with zero schema change:
   #   agg_daily  -> daily-grain measure series (trend/area charts)
   #   agg_rollup -> 30/60/90d windowed values + period-over-period deltas (tiles)
-  synced_database_tables:
+  # Autoscaling reverse-ETL: the synced table targets a BRANCH (not a fixed
+  # instance) and a logical postgres_database. Fields are flat (no nested spec).
+  # synced_table_id is the 3-part UC name of the SYNCED table that lands in UC;
+  # source_table_full_name is the UC aggregate that feeds it.
+  postgres_synced_tables:
     cyber360_agg_daily:
-      name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily_synced
-      database_instance_name: ${resources.database_instances.cyber360_lakebase.name}
-      logical_database_name: ${var.lakebase_database}
-      spec:
-        source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily
-        primary_key_columns:
-          - domain
-          - day
-          - measure
-        scheduling_policy: SNAPSHOT
-        create_database_objects_if_missing: true
-        new_pipeline_spec:
-          storage_catalog: ${var.catalog}
-          storage_schema: ${resources.schemas.cyber360_schema.name}
+      synced_table_id: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily_synced
+      # branch references the production branch's `.name` output.
+      branch: ${resources.postgres_branches.cyber360_production.name}
+      postgres_database: ${var.lakebase_database}
+      source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_daily
+      primary_key_columns:
+        - domain
+        - day
+        - measure
+      scheduling_policy: SNAPSHOT
+      create_database_objects_if_missing: true
+      new_pipeline_spec:
+        storage_catalog: ${var.catalog}
+        storage_schema: ${resources.schemas.cyber360_schema.name}
 
     cyber360_agg_rollup:
-      name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup_synced
-      database_instance_name: ${resources.database_instances.cyber360_lakebase.name}
-      logical_database_name: ${var.lakebase_database}
-      spec:
-        source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup
-        primary_key_columns:
-          - domain
-          - period
-          - measure
-        scheduling_policy: SNAPSHOT
-        create_database_objects_if_missing: true
-        new_pipeline_spec:
-          storage_catalog: ${var.catalog}
-          storage_schema: ${resources.schemas.cyber360_schema.name}
+      synced_table_id: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup_synced
+      branch: ${resources.postgres_branches.cyber360_production.name}
+      postgres_database: ${var.lakebase_database}
+      source_table_full_name: ${var.catalog}.${resources.schemas.cyber360_schema.name}.agg_rollup
+      primary_key_columns:
+        - domain
+        - period
+        - measure
+      scheduling_policy: SNAPSHOT
+      create_database_objects_if_missing: true
+      new_pipeline_spec:
+        storage_catalog: ${var.catalog}
+        storage_schema: ${resources.schemas.cyber360_schema.name}
 
   # ── The dashboard app (FastAPI + built React SPA) ──
   apps:
@@ -203,20 +282,23 @@ resources:
       description: "Cyber360 Unified Cybersecurity Posture Dashboard"
       source_code_path: ./app
 
-      # Bind the Lakebase instance as an app resource. This is what makes the
-      # SP-based data plane work end to end:
-      #   1. grants the app SERVICE PRINCIPAL CAN_CONNECT_AND_CREATE on the
-      #      instance (without this the SP's minted token is rejected), and
-      #   2. makes the CONTROL PLANE inject PGHOST / PGUSER / PGPORT / PGDATABASE
-      #      into the app runtime -- PGUSER is the SP identity the Lakebase pool
-      #      authenticates as.
-      # KPI reads therefore run as the app SP (NOT per-user OBO); interactive
-      # Genie / SQL Warehouse access stays OBO. No Postgres host is hardcoded.
+      # Bind the Lakebase autoscaling branch as an app resource. This grants the
+      # app SERVICE PRINCIPAL CAN_CONNECT_AND_CREATE on the branch (without this
+      # the SP's minted token is rejected). KPI reads run as the app SP (NOT
+      # per-user OBO); interactive Genie / SQL Warehouse access stays OBO.
+      # NOTE: unlike the legacy `database:` binding, the autoscaling `postgres:`
+      # binding does NOT auto-inject PGHOST / PGUSER / PGPORT / PGDATABASE. The
+      # app self-configures at runtime from LAKEBASE_ENDPOINT_NAME (below):
+      # PGHOST via postgres.get_endpoint(...).status.hosts.host, PGUSER from the
+      # app SP's DATABRICKS_CLIENT_ID, password via generate_database_credential.
+      # No Postgres host is hardcoded anywhere.
       resources:
         - name: "lakebase"
-          database:
-            instance_name: ${resources.database_instances.cyber360_lakebase.name}
-            database_name: ${var.lakebase_database}
+          postgres:
+            branch: ${resources.postgres_branches.cyber360_production.name}
+            # Full database path (projects/<id>/branches/<id>/databases/<id>); the
+            # API rejects a bare logical name here.
+            database: ${resources.postgres_databases.cyber360_db.name}
             permission: "CAN_CONNECT_AND_CREATE"
 
       # App config (command + env) is BUNDLE-MANAGED so every workspace value
@@ -242,10 +324,14 @@ resources:
             value: ${var.catalog}
           - name: CYBER360_SCHEMA
             value: ${resources.schemas.cyber360_schema.name}
-          # Lakebase instance + logical database (also injected as PG* by the
-          # bound resource above; kept for the SP credential mint + local dev).
-          - name: LAKEBASE_INSTANCE_NAME
-            value: ${resources.database_instances.cyber360_lakebase.name}
+          # Fully-qualified Lakebase endpoint path -- the single source the app
+          # needs to (a) mint an SP credential via
+          # postgres.generate_database_credential(endpoint=...) and (b) resolve
+          # PGHOST via postgres.get_endpoint(name=...). Composed from the same
+          # DAB vars that define the project/branch/endpoint resources, so it is
+          # never hardcoded and always tracks the deployed topology.
+          - name: LAKEBASE_ENDPOINT_NAME
+            value: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/${var.lakebase_endpoint}
           - name: LAKEBASE_DATABASE_NAME
             value: ${var.lakebase_database}
           # GENIE_*_EMBED_URL are intentionally omitted while unset: the Apps API

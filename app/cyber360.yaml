@@ -25,12 +25,14 @@ data_source:
 
 # --- Lakebase configuration ---
 # Serves two roles:
-#   1. Read-only synced KPI aggregates (populated by synced_database_tables).
+#   1. Read-only synced KPI aggregates (populated by postgres_synced_tables).
 #   2. App-owned read-write state (preferences/chats/sessions) via idempotent
 #      session-bootstrap migrations.
 lakebase:
   enabled: true
-  instance_name: "${LAKEBASE_INSTANCE_NAME}"
+  # Autoscaling endpoint path (projects/<p>/branches/<b>/endpoints/<e>) used to
+  # mint the SP credential and resolve the Postgres host.
+  endpoint_name: "${LAKEBASE_ENDPOINT_NAME}"
   database_name: "${LAKEBASE_DATABASE_NAME:-cyber360}"
   # Postgres schema the app service principal owns for its read-write state
   # tables (created + owned by the app at startup; no external grant needed).
