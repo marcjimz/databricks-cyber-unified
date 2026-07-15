@@ -103,16 +103,26 @@ class LakebaseProvider:
 
         # Period-over-period change from the real agg_rollup value/prev_value.
         # ``prev_value`` is COALESCE(prev, 0.0); ``delta`` is value - prev_value.
-        # When the prior comparison window carries no data (prev_value == 0), the
-        # materialized delta collapses to the full current value -- meaningless as
-        # a period-over-period movement. In that case fall back to the same
-        # deterministic synthesis the seed path uses, so the executive scorecard
-        # shows a plausible movement regardless of how much history the source
-        # dataset happens to carry. Real prior data (prev_value != 0) always wins.
+        # A real period-over-period delta is only meaningful when the prior
+        # comparison window is comparably populated to the current one. With a
+        # shallow source history the prior window is empty (prev == 0) or nearly
+        # empty (a couple of stray rows), so the materialized delta collapses to
+        # ~the full current value -- e.g. 140 open CVEs vs a prior window of 2
+        # reads as "+138", which is nonsense as a movement. We treat the prior as
+        # trustworthy only when ``prev_value`` is at least half the current
+        # magnitude; otherwise we fall back to the same deterministic synthesis
+        # the seed path uses so the executive scorecard shows a plausible,
+        # period-scaled movement regardless of how much history the source
+        # dataset carries. Rate/percentage measures (populated priors) keep their
+        # real deltas; sparse count measures get a sane synthesized change.
         change: KpiChange | None = None
         if row is not None:
             prev = row.get("prev_value")
-            has_real_prior = prev is not None and float(prev) != 0.0
+            has_real_prior = (
+                prev is not None
+                and float(prev) > 0.0
+                and float(prev) >= 0.5 * abs(raw)
+            )
             if has_real_prior:
                 magnitude = (
                     float(row["delta"]) if row.get("delta") is not None
