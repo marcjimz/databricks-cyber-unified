@@ -41,6 +41,15 @@ class TrendInfo(BaseModel):
     label: str
 
 
+class KpiChange(BaseModel):
+    """Period-over-period change for a KPI, driven by the reporting-period
+    selector (30/60/90 days). Rendered as the "Change: ..." line on the card,
+    taking precedence over the static ``trend`` when present."""
+    label: str                       # e.g. "+1.2 pts", "-3d", "+142", "No change"
+    arrow: TrendDirection
+    tone: str                        # "positive" | "negative" | "neutral"
+
+
 class Kpi(BaseModel):
     """A single key performance indicator."""
     key: str
@@ -50,6 +59,7 @@ class Kpi(BaseModel):
     status: RagStatus
     caption: str = ""
     trend: TrendInfo | None = None
+    change: KpiChange | None = None
     lineage: KpiLineage
 
 

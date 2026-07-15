@@ -57,41 +57,38 @@ data_loading:
 # --- Feature flags ---
 features:
   genie_enabled: true
-  soc_view_enabled: true
+  soc_view_enabled: false
   theme_toggle: true
   lineage_popover: true
 
 # --- Executive scorecard top-line KPIs ---
+# NOTE: period-over-period movement is computed programmatically from the
+# selected reporting period (30/60/90d) and surfaced as each KPI's `change`
+# line -- no hardcoded `trend` labels here. Keep captions only.
 top_line_kpis:
   - domain: identity
     measure: mfa_adoption
     caption: "MFA adoption"
-    trend: { direction: flat, label: "Stable" }
 
   - domain: vulnerability
     measure: critical_cves_open
     caption: "Critical CVEs open"
-    trend: { direction: up, label: "+18 vs last month" }
 
   - domain: vulnerability
     measure: kev_unpatched
     caption: "CISA KEV unpatched"
-    trend: { direction: down, label: "-4 vs last week" }
 
   - domain: vulnerability
     measure: patch_sla_compliance
     caption: "Patch SLA compliance"
-    trend: { direction: down, label: "-5% vs target" }
 
   - domain: identity
     measure: pam_vault_coverage
     caption: "PAM vault coverage"
-    trend: { direction: up, label: "+6% vs last quarter" }
 
   - domain: vulnerability
     measure: mean_time_to_patch
     caption: "Mean time to patch"
-    trend: { direction: down, label: "-0.8d vs target" }
 
 # --- Security Domains ---
 domains:

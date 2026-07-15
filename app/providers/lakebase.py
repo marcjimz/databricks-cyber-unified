@@ -23,13 +23,14 @@ from typing import Any
 
 from core.config import (
     Cyber360Config,
-    TrendDirection,
+    _format_change,
     format_measure_value,
+    normalize_period,
     rag_for_measure,
     rollup_status,
 )
 from core.db import lakebase_connection
-from models.common import Kpi, KpiLineage, Paginated, TrendInfo, TrendPoint
+from models.common import Kpi, KpiChange, KpiLineage, Paginated, TrendInfo, TrendPoint
 from models.domain import DomainMetricsResponse
 from models.identity import AccountRow, AccountsQuery
 from models.incidents import IncidentsResponse
@@ -76,7 +77,7 @@ class LakebaseProvider:
         rows = await self._fetch(
             f"SELECT domain, measure, value, prev_value, delta "
             f"FROM {self._rollup_table} WHERE period = %s",
-            (period,),
+            (normalize_period(period),),
         )
         return {(r["domain"], r["measure"]): r for r in rows}
 
@@ -92,22 +93,26 @@ class LakebaseProvider:
     def _build_kpi(self, domain_key: str, measure_name: str, row: dict | None) -> Kpi:
         measure = self.config.get_measure(domain_key, measure_name)
         raw = float(row["value"]) if row and row.get("value") is not None else 0.0
-        delta = float(row["delta"]) if row and row.get("delta") is not None else 0.0
-
-        trend = None
-        if measure and measure.trend:
-            trend = TrendInfo(direction=measure.trend.direction, label=measure.trend.label)
-        elif row is not None:
-            direction = (
-                TrendDirection.up if delta > 0
-                else TrendDirection.down if delta < 0
-                else TrendDirection.flat
-            )
-            trend = TrendInfo(direction=direction, label=f"{delta:+.1f} vs prev period")
 
         if measure is None:
             return Kpi(key=measure_name, label=measure_name, value=str(raw), raw=raw,
-                       status="green", caption="", trend=trend, lineage=None)
+                       status="green", caption="", lineage=None)
+
+        # Period-over-period change from the real agg_rollup value/prev_value.
+        # ``delta`` is materialized as value - prev_value; prefer it, else derive.
+        change: KpiChange | None = None
+        if row is not None:
+            if row.get("delta") is not None:
+                magnitude = float(row["delta"])
+            elif row.get("prev_value") is not None:
+                magnitude = raw - float(row["prev_value"])
+            else:
+                magnitude = 0.0
+            change = KpiChange(**_format_change(measure, magnitude))
+
+        trend = None
+        if measure.trend:
+            trend = TrendInfo(direction=measure.trend.direction, label=measure.trend.label)
 
         return Kpi(
             key=measure.name,
@@ -117,6 +122,7 @@ class LakebaseProvider:
             status=rag_for_measure(measure, raw),
             caption=measure.caption,
             trend=trend,
+            change=change,
             lineage=KpiLineage(
                 measure=measure.name,
                 expression=measure.expression,
@@ -126,8 +132,8 @@ class LakebaseProvider:
 
     # ── public API ──
 
-    async def get_scorecard(self) -> ScorecardResponse:
-        rollup = await self._rollup(DEFAULT_PERIOD)
+    async def get_scorecard(self, period: int = DEFAULT_PERIOD) -> ScorecardResponse:
+        rollup = await self._rollup(period)
 
         top_line_kpis: list[Kpi] = []
         for t in self.config.top_line_kpis:
@@ -183,12 +189,14 @@ class LakebaseProvider:
             domains=domains,
         )
 
-    async def get_domain_metrics(self, domain_key: str) -> DomainMetricsResponse:
+    async def get_domain_metrics(
+        self, domain_key: str, period: int = DEFAULT_PERIOD
+    ) -> DomainMetricsResponse:
         domain = self.config.get_domain(domain_key)
         if not domain:
             raise ValueError(f"Unknown domain: {domain_key}")
 
-        rollup = await self._rollup(DEFAULT_PERIOD)
+        rollup = await self._rollup(period)
         kpis = [
             self._build_kpi(domain_key, m.name, rollup.get((domain_key, m.name)))
             for m in domain.metric_view.measures

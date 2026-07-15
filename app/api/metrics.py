@@ -6,9 +6,9 @@ GET /api/metrics/{domain_key} -- domain-specific KPIs, trends, breakdowns
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.config import Cyber360Config
+from core.config import Cyber360Config, normalize_period
 from core.dependencies import get_config, get_obo_token
 from models.common import ApiResponse, build_meta
 from models.domain import DomainMetricsResponse
@@ -20,11 +20,12 @@ router = APIRouter()
 
 @router.get("/metrics/scorecard")
 async def metrics_scorecard(
+    period: int = Query(30, description="Reporting period in days (30, 60, or 90)"),
     config: Cyber360Config = Depends(get_config),
     token: str = Depends(get_obo_token),
 ) -> ApiResponse[ScorecardResponse]:
     provider = get_provider(config, token)
-    data = await provider.get_scorecard()
+    data = await provider.get_scorecard(normalize_period(period))
 
     # Collect provenance from config
     measures = [t.measure for t in config.top_line_kpis]
@@ -43,6 +44,7 @@ async def metrics_scorecard(
 @router.get("/metrics/{domain_key}")
 async def metrics_domain(
     domain_key: str,
+    period: int = Query(30, description="Reporting period in days (30, 60, or 90)"),
     config: Cyber360Config = Depends(get_config),
     token: str = Depends(get_obo_token),
 ) -> ApiResponse[DomainMetricsResponse]:
@@ -53,7 +55,7 @@ async def metrics_domain(
     provider = get_provider(config, token)
 
     try:
-        data = await provider.get_domain_metrics(domain_key)
+        data = await provider.get_domain_metrics(domain_key, normalize_period(period))
     except PermissionError as e:
         raise HTTPException(
             status_code=403,

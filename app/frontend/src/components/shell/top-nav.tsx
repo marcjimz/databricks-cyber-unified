@@ -1,4 +1,4 @@
-import { BarChart3, LayoutGrid, MessagesSquare, Radar } from "lucide-react"
+import { BarChart3, Gauge, LayoutGrid, MessagesSquare, Radar } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { Cyber360Logo } from "@/components/brand/cyber360-logo"
@@ -85,6 +85,9 @@ export function TopNav() {
               </div>
             </div>
           </div>
+
+          {/* Operational Performance -- not yet available. */}
+          <ComingSoonLink label="Operational Performance" icon={Gauge} />
 
           {/* SOC Analyst -- only when the feature flag is enabled. */}
           {config.features.socViewEnabled ? (

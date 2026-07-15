@@ -251,6 +251,86 @@ def format_measure_value(measure: MeasureConfig, raw: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Period-over-period change (reporting-period selector: 30 / 60 / 90 days)
+# ---------------------------------------------------------------------------
+
+COMPARISON_PERIODS: tuple[int, ...] = (30, 60, 90)
+
+
+def normalize_period(period: int | None) -> int:
+    """Clamp an arbitrary period to the supported {30, 60, 90} set (default 30)."""
+    return period if period in COMPARISON_PERIODS else 30
+
+
+def _hash_unit(s: str) -> float:
+    """Stable 0..1 hash (FNV-1a) so synthesized period deltas are deterministic
+    per demo -- mirrors the TypeScript reference exactly."""
+    h = 2166136261
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return (h & 0xFFFFFFFF) / 4294967296
+
+
+def build_change(measure: MeasureConfig, raw: float, period: int) -> dict[str, str]:
+    """Build a KPI's period-over-period change over the selected reporting
+    period vs. the prior period of the same length.
+
+    Returns a plain dict (``label``/``arrow``/``tone``) that callers wrap in a
+    ``KpiChange`` model -- kept dict-shaped here to avoid a models<->config
+    import cycle. This is the SEED path: the seed dataset is a single snapshot,
+    so the prior period is synthesized deterministically (larger windows move
+    more) for a demo that is stable across reloads. A real provider reads the
+    measure over both windows instead. The label carries no period suffix --
+    the selected reporting period is already shown in the header control.
+    """
+    period = normalize_period(period)
+    scale = 0.06 if period == 30 else 0.10 if period == 60 else 0.15
+    signed = (_hash_unit(f"{measure.name}:{period}") * 2 - 1) * scale
+    raw_change = raw * signed
+
+    is_count = measure.format in (MeasureFormat.count, MeasureFormat.score)
+    magnitude = round(raw_change) if is_count else round(raw_change * 10) / 10
+    return _format_change(measure, magnitude)
+
+
+def _format_change(measure: MeasureConfig, magnitude: float) -> dict[str, str]:
+    """Format a numeric period delta into the KpiChange contract shape.
+
+    Shared by the seed (synthesized) and Lakebase (real agg_rollup) paths so the
+    label/arrow/tone semantics stay identical regardless of data source.
+    """
+    arrow = (
+        TrendDirection.up if magnitude > 0
+        else TrendDirection.down if magnitude < 0
+        else TrendDirection.flat
+    )
+
+    # Favorable if the movement pushes toward the measure's goal direction.
+    if arrow == TrendDirection.flat:
+        tone = "neutral"
+    else:
+        improving = (measure.goal == RagGoal.higher) == (magnitude > 0)
+        tone = "positive" if improving else "negative"
+
+    sign = "+" if magnitude > 0 else ""
+    if measure.format == MeasureFormat.percent:
+        label = f"{sign}{magnitude:.1f} pts"
+    elif measure.format == MeasureFormat.days:
+        label = f"{sign}{magnitude:.1f}d"
+    elif measure.format == MeasureFormat.hours:
+        label = f"{sign}{magnitude:.1f}h"
+    else:
+        label = f"{sign}{int(magnitude):,}"
+
+    return {
+        "label": "No change" if arrow == TrendDirection.flat else label,
+        "arrow": arrow.value,
+        "tone": tone,
+    }
+
+
+# ---------------------------------------------------------------------------
 # YAML loader with env var resolution
 # ---------------------------------------------------------------------------
 
