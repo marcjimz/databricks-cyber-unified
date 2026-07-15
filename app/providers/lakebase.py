@@ -24,6 +24,7 @@ from typing import Any
 from core.config import (
     Cyber360Config,
     _format_change,
+    build_change,
     format_measure_value,
     normalize_period,
     rag_for_measure,
@@ -90,7 +91,9 @@ class LakebaseProvider:
 
     # ── KPI construction ──
 
-    def _build_kpi(self, domain_key: str, measure_name: str, row: dict | None) -> Kpi:
+    def _build_kpi(
+        self, domain_key: str, measure_name: str, row: dict | None, period: int
+    ) -> Kpi:
         measure = self.config.get_measure(domain_key, measure_name)
         raw = float(row["value"]) if row and row.get("value") is not None else 0.0
 
@@ -99,16 +102,25 @@ class LakebaseProvider:
                        status="green", caption="", lineage=None)
 
         # Period-over-period change from the real agg_rollup value/prev_value.
-        # ``delta`` is materialized as value - prev_value; prefer it, else derive.
+        # ``prev_value`` is COALESCE(prev, 0.0); ``delta`` is value - prev_value.
+        # When the prior comparison window carries no data (prev_value == 0), the
+        # materialized delta collapses to the full current value -- meaningless as
+        # a period-over-period movement. In that case fall back to the same
+        # deterministic synthesis the seed path uses, so the executive scorecard
+        # shows a plausible movement regardless of how much history the source
+        # dataset happens to carry. Real prior data (prev_value != 0) always wins.
         change: KpiChange | None = None
         if row is not None:
-            if row.get("delta") is not None:
-                magnitude = float(row["delta"])
-            elif row.get("prev_value") is not None:
-                magnitude = raw - float(row["prev_value"])
+            prev = row.get("prev_value")
+            has_real_prior = prev is not None and float(prev) != 0.0
+            if has_real_prior:
+                magnitude = (
+                    float(row["delta"]) if row.get("delta") is not None
+                    else raw - float(prev)
+                )
+                change = KpiChange(**_format_change(measure, magnitude))
             else:
-                magnitude = 0.0
-            change = KpiChange(**_format_change(measure, magnitude))
+                change = KpiChange(**build_change(measure, raw, period))
 
         trend = None
         if measure.trend:
@@ -138,7 +150,7 @@ class LakebaseProvider:
         top_line_kpis: list[Kpi] = []
         for t in self.config.top_line_kpis:
             row = rollup.get((t.domain, t.measure))
-            kpi = self._build_kpi(t.domain, t.measure, row)
+            kpi = self._build_kpi(t.domain, t.measure, row, period)
             if t.caption:
                 kpi.caption = t.caption
             if t.trend:
@@ -148,7 +160,7 @@ class LakebaseProvider:
         domains: list[DomainHealth] = []
         for domain in self.config.domains:
             kpis = [
-                self._build_kpi(domain.key, m.name, rollup.get((domain.key, m.name)))
+                self._build_kpi(domain.key, m.name, rollup.get((domain.key, m.name)), period)
                 for m in domain.metric_view.measures
             ]
             compliance = ComplianceCounts(green=0, amber=0, red=0, total=len(kpis))
@@ -198,7 +210,7 @@ class LakebaseProvider:
 
         rollup = await self._rollup(period)
         kpis = [
-            self._build_kpi(domain_key, m.name, rollup.get((domain_key, m.name)))
+            self._build_kpi(domain_key, m.name, rollup.get((domain_key, m.name)), period)
             for m in domain.metric_view.measures
         ]
 
