@@ -10,13 +10,11 @@ One pipeline, three declarative stages, all driven by ``cyber360.yaml``:
                     and the pipeline reads them untouched.
 
   2. METRIC VIEWS   A UC Metric View per domain (governed semantic layer that
-                    Genie Spaces sit on) is generated from that domain's
-                    ``metric_view`` block. ``CREATE ... VIEW WITH METRICS`` is UC
-                    DDL that a declarative pipeline cannot run, so it lives in a
-                    separate warehouse-executed step -- ``create_metric_views.py``,
-                    chained after this pipeline in the ``cyber360_data_plane`` job. It
-                    reads the SAME ``cyber360.yaml`` blocks, so the semantic
-                    definition still lives in one place.
+                    Genie Spaces sit on). ``CREATE ... VIEW WITH METRICS`` is UC
+                    DDL that a declarative pipeline cannot run, so each view is a
+                    declarative ``.sql`` asset under ``resources/metricviews/``,
+                    applied by warehouse-executed ``sql_task`` steps chained after
+                    this pipeline in the ``cyber360_data_plane`` job.
 
   3. AGGREGATES     Materialize two GENERIC tables that cover every
                     domain/measure with zero schema change:
@@ -26,7 +24,7 @@ One pipeline, three declarative stages, all driven by ``cyber360.yaml``:
                         -> 30/60/90d windowed values + period-over-period deltas
                            for KPI tiles
                     Both are CDF-enabled with the primary keys the
-                    ``synced_database_tables`` reverse-ETL expects.
+                    ``postgres_synced_tables`` reverse-ETL expects.
 
 Adding a domain or measure is a pure ``cyber360.yaml`` edit: this pipeline
 picks it up with no code change. Measure expressions are evaluated here exactly
@@ -165,12 +163,12 @@ def _day_expression(domain: dict) -> str:
 # runtime rejects it both inside an ``@dlt.table`` body
 # ([UNSUPPORTED_COMMAND_IN_QUERY_DEFINITION]) and at module scope during graph
 # analysis ([UNITY_CREDENTIAL_SCOPE_MISSING_SCOPE]). Per the Databricks docs,
-# metric views are created from a SQL warehouse -- see
-# ``pipelines/create_metric_views.py``, run as the ``create_metric_views`` task
-# chained after this pipeline in the ``cyber360_data_plane`` job. It reads the same
-# ``cyber360.yaml`` domain blocks, so the semantic definition still lives in one
-# place. The KPI aggregates below read the OCSF gold tables directly and do NOT
-# depend on the metric views, so the dashboard's data plane is unaffected.
+# metric views are created from a SQL warehouse -- each domain's view is a
+# declarative ``.sql`` asset under ``resources/metricviews/``, applied by the
+# ``metric_view_*`` ``sql_task`` steps chained after this pipeline in the
+# ``cyber360_data_plane`` job. The KPI aggregates below read the OCSF gold tables
+# directly and do NOT depend on the metric views, so the dashboard's data plane
+# is unaffected.
 
 
 # ---------------------------------------------------------------------------

@@ -15,11 +15,12 @@ from core.config import (
     Cyber360Config,
     MeasureConfig,
     TrendConfig,
+    build_change,
     format_measure_value,
     rag_for_measure,
     rollup_status,
 )
-from models.common import Kpi, KpiLineage, Paginated, TrendInfo, TrendPoint
+from models.common import Kpi, KpiChange, KpiLineage, Paginated, TrendInfo, TrendPoint
 from models.domain import BreakdownItem, DomainMetricsResponse
 from models.identity import AccountRow, AccountsQuery
 from models.incidents import (
@@ -391,6 +392,7 @@ INCIDENT_MTTR = IncidentMttr(P1="4.2h", P2="6.1h", P3="18.4h", P4="3.2d")
 def _build_kpi(
     measure: MeasureConfig,
     raw: float,
+    period: int,
     override_caption: str | None = None,
     override_trend: TrendConfig | None = None,
 ) -> Kpi:
@@ -403,6 +405,7 @@ def _build_kpi(
         status=rag_for_measure(measure, raw),
         caption=override_caption or measure.caption,
         trend=TrendInfo(direction=trend.direction, label=trend.label) if trend else None,
+        change=KpiChange(**build_change(measure, raw, period)),
         lineage=KpiLineage(
             measure=measure.name,
             expression=measure.expression,
@@ -532,11 +535,11 @@ class SeedProvider:
 
     # ── Shared helpers ──
 
-    def _domain_kpis(self, domain_key: str, values: dict[str, float]) -> list[Kpi]:
+    def _domain_kpis(self, domain_key: str, values: dict[str, float], period: int) -> list[Kpi]:
         domain = self.config.get_domain(domain_key)
         if not domain:
             return []
-        return [_build_kpi(m, values.get(m.name, 0)) for m in domain.metric_view.measures]
+        return [_build_kpi(m, values.get(m.name, 0), period) for m in domain.metric_view.measures]
 
     def _get_values_for_domain(self, domain_key: str) -> dict[str, float]:
         if domain_key == "identity":
@@ -547,7 +550,7 @@ class SeedProvider:
 
     # ── Public API ──
 
-    async def get_scorecard(self) -> ScorecardResponse:
+    async def get_scorecard(self, period: int = 30) -> ScorecardResponse:
         values_by_domain: dict[str, dict[str, float]] = {}
         for d in self.config.domains:
             values_by_domain[d.key] = self._get_values_for_domain(d.key)
@@ -559,13 +562,13 @@ class SeedProvider:
             if not measure:
                 continue
             raw = values_by_domain.get(t.domain, {}).get(t.measure, 0)
-            top_line_kpis.append(_build_kpi(measure, raw, t.caption, t.trend))
+            top_line_kpis.append(_build_kpi(measure, raw, period, t.caption, t.trend))
 
         # Domain health cards
         domains: list[DomainHealth] = []
         for domain in self.config.domains:
             values = values_by_domain.get(domain.key, {})
-            kpis = self._domain_kpis(domain.key, values)
+            kpis = self._domain_kpis(domain.key, values, period)
 
             compliance = ComplianceCounts(green=0, amber=0, red=0, total=len(kpis))
             for k in kpis:
@@ -602,20 +605,20 @@ class SeedProvider:
             domains=domains,
         )
 
-    async def get_domain_metrics(self, domain_key: str) -> DomainMetricsResponse:
+    async def get_domain_metrics(self, domain_key: str, period: int = 30) -> DomainMetricsResponse:
         domain = self.config.get_domain(domain_key)
         if not domain:
             raise ValueError(f"Unknown domain: {domain_key}")
 
         if domain_key == "identity":
-            return self._get_identity_metrics()
+            return self._get_identity_metrics(period)
         elif domain_key == "vulnerability":
-            return self._get_vulnerability_metrics()
+            return self._get_vulnerability_metrics(period)
         raise ValueError(f"No seed data for domain: {domain_key}")
 
-    def _get_identity_metrics(self) -> DomainMetricsResponse:
+    def _get_identity_metrics(self, period: int) -> DomainMetricsResponse:
         c = self._compute_identity()
-        kpis = self._domain_kpis("identity", self._identity_values(c))
+        kpis = self._domain_kpis("identity", self._identity_values(c), period)
         seed: IdentitySeed = c["seed"]
 
         # Trend: MFA adoption + SSO by day
@@ -666,9 +669,9 @@ class SeedProvider:
             breakdowns={"authByProtocol": auth_by_protocol, "accountsByStatus": accounts_by_status},
         )
 
-    def _get_vulnerability_metrics(self) -> DomainMetricsResponse:
+    def _get_vulnerability_metrics(self, period: int) -> DomainMetricsResponse:
         c = self._compute_vulnerability()
-        kpis = self._domain_kpis("vulnerability", self._vulnerability_values(c))
+        kpis = self._domain_kpis("vulnerability", self._vulnerability_values(c), period)
         seed: VulnerabilitySeed = c["seed"]
 
         # Trend: findings by severity by day

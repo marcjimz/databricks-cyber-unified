@@ -3,8 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
-build/
+# Anchored to the repo root so these Python build-artifact rules never collide
+# with app/frontend/dist/ (the committed SPA build -- see Node section below).
+/dist/
+/build/
 *.egg
 
 # Virtual environments
@@ -14,13 +16,12 @@ env/
 
 # Node
 node_modules/
-# NOTE: app/frontend/dist/ is intentionally COMMITTED. The Databricks Apps
-# runtime has no build step (app.yaml runs pip + uvicorn only) and bundle
-# deploy skips gitignored paths, so the built SPA must be tracked for a
-# plain `bundle deploy` to ship a working frontend. Rebuild with `make build`.
-# Negate the broad Python `dist/` rule above for this one path.
-!app/frontend/dist/
-!app/frontend/dist/**
+# NOTE: app/frontend/dist/ is intentionally COMMITTED and NOT ignored. The
+# Databricks Apps runtime has no build step (app.yaml runs pip + uvicorn only)
+# and `bundle deploy` skips gitignored paths, so the built SPA must be tracked
+# for a plain deploy to ship a working frontend. The Python dist/ rule above is
+# anchored to the repo root (/dist/), so it never matches this path -- the whole
+# folder is tracked like any normal directory. Rebuild with `make build`.
 
 # Environment
 .env

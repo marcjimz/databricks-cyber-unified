@@ -25,19 +25,28 @@ data_source:
 
 # --- Lakebase configuration ---
 # Serves two roles:
-#   1. Read-only synced KPI aggregates (populated by synced_database_tables).
+#   1. Read-only synced KPI aggregates (populated by postgres_synced_tables).
 #   2. App-owned read-write state (preferences/chats/sessions) via idempotent
 #      session-bootstrap migrations.
 lakebase:
   enabled: true
-  instance_name: "${LAKEBASE_INSTANCE_NAME}"
+  # Autoscaling endpoint path (projects/<p>/branches/<b>/endpoints/<e>) used to
+  # mint the SP credential and resolve the Postgres host.
+  endpoint_name: "${LAKEBASE_ENDPOINT_NAME}"
   database_name: "${LAKEBASE_DATABASE_NAME:-cyber360}"
   # Postgres schema the app service principal owns for its read-write state
   # tables (created + owned by the app at startup; no external grant needed).
   app_schema: "cyber360_app"
+  # Databricks GROUP role the KPI read path connects as. This group is a
+  # bring-your-own prerequisite: it must exist and the app SP must be a member.
+  # The bundle registers it as a Postgres group role (databricks_auth) and
+  # grants it USAGE + SELECT on the synced schema, so the SP inherits reads via
+  # group membership -- no per-SP object grant. Empty -> read as the SP's own
+  # Postgres role (requires a direct per-SP grant instead).
+  reader_role: "${LAKEBASE_READER_ROLE:-}"
   # Synced aggregate tables (read-only, produced by the reverse-ETL sync).
-  # They live in the UC/Postgres schema named by data_source.schema; the SP is
-  # granted USAGE + SELECT there.
+  # They live in the UC/Postgres schema named by data_source.schema; the group
+  # reader role is granted USAGE + SELECT there.
   synced_tables:
     daily: "agg_daily_synced"
     rollup: "agg_rollup_synced"
@@ -57,41 +66,38 @@ data_loading:
 # --- Feature flags ---
 features:
   genie_enabled: true
-  soc_view_enabled: true
+  soc_view_enabled: false
   theme_toggle: true
   lineage_popover: true
 
 # --- Executive scorecard top-line KPIs ---
+# NOTE: period-over-period movement is computed programmatically from the
+# selected reporting period (30/60/90d) and surfaced as each KPI's `change`
+# line -- no hardcoded `trend` labels here. Keep captions only.
 top_line_kpis:
   - domain: identity
     measure: mfa_adoption
     caption: "MFA adoption"
-    trend: { direction: flat, label: "Stable" }
 
   - domain: vulnerability
     measure: critical_cves_open
     caption: "Critical CVEs open"
-    trend: { direction: up, label: "+18 vs last month" }
 
   - domain: vulnerability
     measure: kev_unpatched
     caption: "CISA KEV unpatched"
-    trend: { direction: down, label: "-4 vs last week" }
 
   - domain: vulnerability
     measure: patch_sla_compliance
     caption: "Patch SLA compliance"
-    trend: { direction: down, label: "-5% vs target" }
 
   - domain: identity
     measure: pam_vault_coverage
     caption: "PAM vault coverage"
-    trend: { direction: up, label: "+6% vs last quarter" }
 
   - domain: vulnerability
     measure: mean_time_to_patch
     caption: "Mean time to patch"
-    trend: { direction: down, label: "-0.8d vs target" }
 
 # --- Security Domains ---
 domains:
