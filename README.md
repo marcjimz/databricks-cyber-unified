@@ -45,26 +45,77 @@ React SPA ─▶ FastAPI ─▶ LakebaseProvider (KPI reads) ──────�
 
 ## Prerequisites
 
-- **Databricks CLI ≥ 1.3.0** (`databricks --version`) authenticated to the target
-  workspace (`databricks auth login`).
+- **Databricks CLI ≥ 0.297** (`databricks --version`) authenticated to the target
+  workspace (`databricks auth login`). Older CLIs may hard-error on the newer
+  Lakebase resource types this bundle uses (`postgres_projects`, `postgres_databases`,
+  `postgres_synced_tables`); see the note under **Deploy** about validation warnings.
 - **Python 3.11+** and **Node 20+** (for local dev / building the SPA).
-- Workspace permission to create a database instance, pipeline, synced tables,
+- Workspace permission to create a Lakebase project, pipeline, synced tables,
   schema/volume, and an app.
+- **Bring-your-own prerequisites** (the bundle does *not* create these):
+  - The **UC catalog** (`var.catalog`) must already exist and be owned/accessible by
+    the deploying identity — the bundle only creates the schema inside it.
+  - The **reader group** (`var.lakebase_reader_group`, default `cyber360-lakebase-readers`)
+    must already exist as a Databricks group, **and the app service principal must be
+    a member.** The KPI read path connects as this group's Postgres role.
 
 ---
 
 ## Deploy
 
-All workspace-specific values (catalog, schema, warehouse id, Lakebase instance,
-Genie embed URLs) are **DAB variables** — override them at deploy time, never
-hardcode. Defaults live in `databricks.yml`.
+All workspace-specific values (catalog, schema, warehouse id, Lakebase topology,
+reader group, Genie embed URLs) are **DAB variables** — override them at deploy
+time, never hardcode. Defaults live in `databricks.yml`.
+
+### Set these first (they are NOT hardcoded to your workspace)
+
+| What | How | Why |
+|------|-----|-----|
+| **Workspace host** | Deploy from a Databricks **Git folder** (targets that workspace automatically), or set `DATABRICKS_HOST` / use `databricks auth login` / `-p <profile>`. | `workspace.host` is an auth field — the CLI resolves it *before* variables, so it can't be a `${var}` and is intentionally omitted from `databricks.yml`. It resolves from the ambient environment. |
+| **`lakebase_owner_role`** | `--var lakebase_owner_role=<your-role-id>` | The Postgres role that OWNS the app database. Lakebase derives it from the **deploying identity's** email (dots → hyphens), e.g. `jane.doe@corp.com` → `jane-doe`. The default (`marcin-jimenez`) is the original author's — **override it for any other deployer.** |
+| **`catalog`** (and `schema` if desired) | `--var catalog=<your_catalog>` | The UC catalog is a bring-your-own prerequisite (see above). |
+| **`warehouse_id`** | `--var warehouse_id=<id>` | Only used by the interactive Genie drawer, never KPI reads. |
+| **`lakebase_reader_group`** | `--var lakebase_reader_group=<group>` if not using the default | Must be an existing Databricks group whose members include the app SP (see Prerequisites). |
+
+### Deploy flow (two-phase — required, by design)
+
+Synced tables can't bind until their source aggregate tables exist, so the first
+`deploy` **partially fails on the synced tables — that is expected** — you run the
+pipeline, then deploy again. Substitute your own `--var` overrides throughout:
 
 ```bash
-databricks bundle validate -t dev      # check the bundle config
-databricks bundle deploy   -t dev      # creates instance, pipeline, synced tables, app
-databricks bundle run cyber360_pipeline -t dev   # build gold → metric views → aggregates
-databricks bundle run cyber360_app      -t dev   # start the app (prints the app URL)
+# Assume host comes from a Git folder / DATABRICKS_HOST / active profile.
+export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
+
+# 1. Phase-1 deploy — creates Lakebase project, schema, pipeline, app.
+#    The synced tables FAIL here because agg_daily/agg_rollup don't exist yet. EXPECTED.
+databricks bundle deploy -t dev $VARS
+
+# 2. Build the data plane — pipeline (gold + agg_daily/agg_rollup) then the metric views.
+databricks bundle run cyber360_data_plane -t dev $VARS
+
+# 3. Phase-2 deploy — now the synced tables succeed (their sources exist). "Deployment complete!"
+databricks bundle deploy -t dev $VARS
+
+# 4. Grant the reader group read on the synced schema (the app SP inherits it via
+#    group membership). MUST run after phase-2 created the synced tables in Postgres.
+databricks bundle run cyber360_grant_reader_role -t dev $VARS
+
+# 5. Start the app (prints the app URL).
+databricks bundle run cyber360_app -t dev $VARS
 ```
+
+> **Why the grant step (4) exists:** Databricks does not propagate UC / `uc_securable`
+> grants down to Postgres role privileges, and the app reads the synced aggregates over
+> a *direct* psycopg connection. Skipping step 4 leaves the metrics API returning 500 /
+> "Failed to load data" even though everything deployed. The grant is idempotent — safe
+> to re-run, and covers future re-syncs via `ALTER DEFAULT PRIVILEGES`.
+
+> **Validation warnings are harmless.** `databricks bundle validate` emits
+> `unknown field: replace_existing / postgres_databases / postgres_synced_tables`
+> on current CLI builds — the bundled JSON schema lags the Lakebase API. These fields
+> are valid and deploy correctly; **do not remove them to silence the warnings** (that
+> breaks the deploy). Upgrade the CLI to clear them.
 
 **Bring-your-own-data.** The bundled synthetic data is a convenience, not a
 requirement. The `load_synthetic_data` variable (**default `true`**) gates the

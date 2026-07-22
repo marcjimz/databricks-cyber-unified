@@ -68,6 +68,16 @@ variables:
       deploying identity's role id; it is combined with the branch path to form
       the full projects/<p>/branches/<b>/roles/<role_id> owner reference.
     default: "marcin-jimenez"
+  lakebase_reader_group:
+    description: >-
+      Databricks GROUP name the KPI read path connects as (a bring-your-own
+      prerequisite: the group must exist and the app service principal must be a
+      member). The bundle registers it as a Postgres group role via the
+      databricks_auth extension and grants it USAGE + SELECT on the synced
+      schema, so the app SP inherits read access through group membership --
+      no per-SP object grant. The name is case-sensitive and must match the
+      Databricks group's display name exactly.
+    default: "cyber360-lakebase-readers"
   load_synthetic_data:
     description: "Gate the pipeline's demo-data ingest stage. true = load bundled OCSF CSVs; false = build views/aggregates over the customer's existing gold tables (bring-your-own-data)."
     default: true
@@ -90,6 +100,7 @@ sync:
     - data/**
     - app/cyber360.yaml
     - resources/metricviews/**
+    - resources/grant_reader_role.py
 
 resources:
   # ── Lakebase autoscaling project: managed Postgres for KPI reads + app state ──
@@ -235,6 +246,46 @@ resources:
               catalog: ${var.catalog}
               schema: ${resources.schemas.cyber360_schema.name}
 
+    # ── Post-deploy grant: reader GROUP role -> read on synced Postgres schema ──
+    # Registers the Databricks reader group (bring-your-own prerequisite) as a
+    # Postgres group role and grants it USAGE + SELECT on the synced-aggregate
+    # schema, so the app SP inherits KPI reads via group membership -- no per-SP
+    # object grant. Databricks does NOT auto-propagate UC/uc_securable grants to
+    # Postgres roles, so this Postgres-layer grant is required for the app's
+    # direct psycopg read path.
+    #
+    # RUN THIS AS THE FINAL STEP of the deploy flow, AFTER the phase-2 deploy has
+    # created the synced tables and their schema in Postgres:
+    #   databricks bundle run cyber360_grant_reader_role -t dev
+    # It runs as the deploying identity (the synced-schema owner) and is fully
+    # idempotent (safe to re-run; ALTER DEFAULT PRIVILEGES covers future re-syncs).
+    cyber360_grant_reader_role:
+      name: "[${bundle.target}] cyber360-grant-reader-role"
+      tasks:
+        - task_key: grant_reader_role
+          environment_key: grant_env
+          spark_python_task:
+            python_file: ${workspace.file_path}/resources/grant_reader_role.py
+            parameters:
+              - "--endpoint"
+              - projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/${var.lakebase_endpoint}
+              - "--database"
+              - ${var.lakebase_database}
+              - "--schema"
+              - ${resources.schemas.cyber360_schema.name}
+              - "--group"
+              - ${var.lakebase_reader_group}
+      # Serverless job compute. psycopg is not in the base image, and the base
+      # image's databricks-sdk predates the autoscaling `ws.postgres` API used to
+      # mint the credential + resolve the host -- so pin a recent SDK too.
+      environments:
+        - environment_key: grant_env
+          spec:
+            client: "3"
+            dependencies:
+              - psycopg[binary]
+              - databricks-sdk>=0.102.0
+
   # ── Native reverse-ETL: UC aggregate tables -> Lakebase Postgres (read-only) ──
   # Two generic tables cover every domain/measure with zero schema change:
   #   agg_daily  -> daily-grain measure series (trend/area charts)
@@ -300,6 +351,26 @@ resources:
             # API rejects a bare logical name here.
             database: ${resources.postgres_databases.cyber360_db.name}
             permission: "CAN_CONNECT_AND_CREATE"
+        # The `postgres:` binding above only grants the SP CONNECT + CREATE on the
+        # branch -- NOT read access to the synced KPI tables (which land in a
+        # UC-governed schema owned by the reverse-ETL writer role, not the app SP).
+        # The synced aggregates are Unity Catalog securables, so we grant the app
+        # SP SELECT on each declaratively via a `uc_securable` resource. Databricks
+        # auto-grants the prerequisite USE CATALOG + USE SCHEMA, and for a
+        # UC-governed Lakebase synced table that SELECT is what authorizes the
+        # Postgres-side read the app performs. Referencing the synced-table
+        # resource's `synced_table_id` also orders app deploy AFTER the table
+        # exists, so the grant target is present. No manual Postgres GRANT needed.
+        - name: "agg_daily_synced"
+          uc_securable:
+            securable_full_name: ${resources.postgres_synced_tables.cyber360_agg_daily.synced_table_id}
+            securable_type: "TABLE"
+            permission: "SELECT"
+        - name: "agg_rollup_synced"
+          uc_securable:
+            securable_full_name: ${resources.postgres_synced_tables.cyber360_agg_rollup.synced_table_id}
+            securable_type: "TABLE"
+            permission: "SELECT"
 
       # App config (command + env) is BUNDLE-MANAGED so every workspace value
       # flows from DAB variables via ${var.*} / ${resources.*} substitution --
@@ -334,6 +405,13 @@ resources:
             value: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/${var.lakebase_endpoint}
           - name: LAKEBASE_DATABASE_NAME
             value: ${var.lakebase_database}
+          # Databricks GROUP role the KPI read path connects as. The app SP is a
+          # member of this group, so it connects with PGUSER = this name and its
+          # own OAuth token, and the session runs AS the group role -- inheriting
+          # the group's USAGE + SELECT on the synced schema (see the post-deploy
+          # grant task). Centralizes the read grant on the group, not the SP.
+          - name: LAKEBASE_READER_ROLE
+            value: ${var.lakebase_reader_group}
           # GENIE_*_EMBED_URL are intentionally omitted while unset: the Apps API
           # rejects an env var whose value resolves empty, and the genie_*_embed_url
           # vars default to "". cyber360.yaml resolves the missing vars to "" (Genie
@@ -348,17 +426,22 @@ resources:
         - level: CAN_MANAGE
           user_name: ${workspace.current_user.userName}
 
+# NOTE on workspace host: `workspace.host` is an AUTHENTICATION field, which the
+# Databricks CLI resolves BEFORE variable substitution -- so it cannot be a
+# ${var.*} placeholder (the CLI errors: "Variable interpolation is not supported
+# for fields that configure authentication"). It is therefore intentionally
+# OMITTED here so the host resolves from the ambient environment, which is the
+# portable default: deploying from a Databricks Git folder targets THAT
+# workspace automatically; from a laptop it uses the active CLI profile or the
+# DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
+# `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
   dev:
     default: true
     mode: development
-    workspace:
-      host: https://fevm-marcjimz-demo-ws-2.cloud.databricks.com
 
   prod:
     mode: production
-    workspace:
-      host: https://fevm-marcjimz-demo-ws-2.cloud.databricks.com
     resources:
       apps:
         cyber360_app:

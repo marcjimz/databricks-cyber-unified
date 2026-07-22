@@ -37,9 +37,16 @@ lakebase:
   # Postgres schema the app service principal owns for its read-write state
   # tables (created + owned by the app at startup; no external grant needed).
   app_schema: "cyber360_app"
+  # Databricks GROUP role the KPI read path connects as. This group is a
+  # bring-your-own prerequisite: it must exist and the app SP must be a member.
+  # The bundle registers it as a Postgres group role (databricks_auth) and
+  # grants it USAGE + SELECT on the synced schema, so the SP inherits reads via
+  # group membership -- no per-SP object grant. Empty -> read as the SP's own
+  # Postgres role (requires a direct per-SP grant instead).
+  reader_role: "${LAKEBASE_READER_ROLE:-}"
   # Synced aggregate tables (read-only, produced by the reverse-ETL sync).
-  # They live in the UC/Postgres schema named by data_source.schema; the SP is
-  # granted USAGE + SELECT there.
+  # They live in the UC/Postgres schema named by data_source.schema; the group
+  # reader role is granted USAGE + SELECT there.
   synced_tables:
     daily: "agg_daily_synced"
     rollup: "agg_rollup_synced"

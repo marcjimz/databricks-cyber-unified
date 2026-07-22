@@ -10,9 +10,14 @@ the SP username from DATABRICKS_CLIENT_ID. Both access modes below mint their
 token with a bare ``WorkspaceClient()`` (ambient SP OAuth):
 
   * App-level pool -- app-owned STATE tables (preferences / chats / sessions)
-    that the session-bootstrap migrations create and maintain. Opened at startup.
+    that the session-bootstrap migrations create and maintain. Opened at
+    startup. Connects as the SP's own Postgres role (it owns this schema).
 
-  * Per-request connection -- the read-only KPI aggregate reads.
+  * Per-request connection -- the read-only KPI aggregate reads. Connects with
+    PGUSER = a Databricks *group* role (``lakebase.reader_role``) that holds the
+    USAGE + SELECT grants on the synced schema; the SP is a group member, so its
+    token authenticates and the session runs as the group role. This centralizes
+    the read grant on the group instead of per-SP object grants.
 
 Interactive Genie / SQL Warehouse access (elsewhere) stays OBO; only the
 Lakebase Postgres connection is SP-based. Everything is gracefully disabled
@@ -69,13 +74,22 @@ def _resolve_host(config: Cyber360Config) -> str:
     return _pghost
 
 
-def _lakebase_dsn(config: Cyber360Config, password: str, *, search_path: str = "") -> str:
+def _lakebase_dsn(
+    config: Cyber360Config,
+    password: str,
+    *,
+    search_path: str = "",
+    user: str = "",
+) -> str:
     """Build a psycopg conninfo string for the Lakebase endpoint.
 
-    Host is resolved from the bound endpoint (``_resolve_host``); the SP username
-    is its DATABRICKS_CLIENT_ID (Lakebase authenticates the SP as a Postgres role
-    named for its client id). PGUSER / PGPORT / PGDATABASE env vars override for
-    local/dev.
+    Host is resolved from the bound endpoint (``_resolve_host``). The Postgres
+    username defaults to the SP's DATABRICKS_CLIENT_ID (Lakebase authenticates
+    the SP as a Postgres role named for its client id), but an explicit ``user``
+    override takes precedence -- used by the KPI read path to connect AS a
+    Databricks group role (the SP is a member, so its own OAuth token still
+    authenticates, and the session runs as the group role). PGUSER / PGPORT /
+    PGDATABASE env vars override for local/dev.
 
     ``search_path`` pins the session schema resolution as a libpq connection
     *option* (session-level, not transactional -- so it survives the connection
@@ -87,10 +101,10 @@ def _lakebase_dsn(config: Cyber360Config, password: str, *, search_path: str = "
     host = _resolve_host(config)
     port = os.environ.get("PGPORT", "5432")
     dbname = os.environ.get("PGDATABASE") or config.lakebase.database_name
-    user = os.environ.get("PGUSER") or os.environ.get("DATABRICKS_CLIENT_ID", "")
+    pg_user = user or os.environ.get("PGUSER") or os.environ.get("DATABRICKS_CLIENT_ID", "")
     dsn = (
         f"host={host} port={port} dbname={dbname} "
-        f"user={user} password={password} sslmode=require"
+        f"user={pg_user} password={password} sslmode=require"
     )
     if search_path:
         # Schema names here are simple identifiers, so no inner quoting needed.
@@ -162,21 +176,30 @@ def get_pool() -> AsyncConnectionPool | None:
 async def lakebase_connection(
     config: Cyber360Config,
 ) -> AsyncIterator[psycopg.AsyncConnection]:
-    """Yield a short-lived Lakebase connection authenticated as the app SP.
+    """Yield a short-lived Lakebase connection for the KPI aggregate reads.
 
-    KPI aggregate reads run as the service principal (not per-user OBO). Raises
-    PermissionError when the credential mint or connection is rejected, which the
-    API layer surfaces as HTTP 403 (access restricted).
+    The SP's OAuth token always authenticates the connection (not per-user OBO).
+    When ``lakebase.reader_role`` is set, the connection's PGUSER is that
+    Databricks group role instead of the SP's own role: the SP is a group
+    member, so its token is accepted and the session runs AS the group role,
+    inheriting the group's USAGE + SELECT on the synced schema. When unset, it
+    connects as the SP's own Postgres role (which then needs a direct grant).
+
+    Raises PermissionError when the credential mint or connection is rejected,
+    which the API layer surfaces as HTTP 403 (access restricted).
     """
     import psycopg
 
     try:
         # Synced aggregates land in the UC/Postgres schema named by
         # data_source.schema (dev-mode prefixes it, e.g. dev_<user>_posture).
-        # The SP has USAGE + SELECT there; pin search_path so the provider's
-        # unqualified reads resolve to it.
+        # The group reader role has USAGE + SELECT there; pin search_path so the
+        # provider's unqualified reads resolve to it.
         dsn = _lakebase_dsn(
-            config, _sp_credential(config), search_path=config.data_source.schema_
+            config,
+            _sp_credential(config),
+            search_path=config.data_source.schema_,
+            user=config.lakebase.reader_role,
         )
     except Exception as exc:  # credential mint failed -> treat as access denied
         raise PermissionError(f"Unable to obtain Lakebase credential: {exc}") from exc

@@ -89,6 +89,15 @@ class LakebaseConfig(BaseModel):
     # external grant required. Kept separate from the read-only synced-aggregate
     # schema (data_source.schema), which the SP only has SELECT on.
     app_schema: str = "cyber360_app"
+    # Postgres role the KPI READ path connects as. This is the name of a
+    # Databricks *group* that has been registered as a Postgres group role (via
+    # the databricks_auth extension) and granted USAGE + SELECT on the synced
+    # aggregate schema. The app SP is a member of that group, so it connects
+    # with PGUSER = this role name and its own OAuth token, and the session runs
+    # AS the group role -- inheriting the group's read grants without any
+    # per-SP object grant. When empty, the read path falls back to connecting as
+    # the SP's own Postgres role (requires a direct per-SP grant instead).
+    reader_role: str = ""
     synced_tables: LakebaseSyncedTablesConfig = LakebaseSyncedTablesConfig()
     state_tables: LakebaseStateTablesConfig = LakebaseStateTablesConfig()
 
