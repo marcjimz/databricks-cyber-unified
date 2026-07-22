@@ -1,42 +1,40 @@
+<p align="center">
+  <img src="docs/assets/dbx-banner.jpeg" alt="Databricks" width="100%" />
+</p>
+
 # Cyber360 Unified Dashboard
 
-A **config-driven** cybersecurity posture dashboard that runs as a Databricks
-App. KPIs are built on an **OCSF-aligned gold layer**, served from **Lakebase**
-(managed Postgres) via native synced tables, and rendered by a React SPA behind
-a FastAPI backend. You customize it by editing **`app/cyber360.yaml`** — domains,
-measures, KPIs, thresholds, and Genie Spaces — **not** by touching code.
+A cybersecurity posture dashboard that runs as a Databricks App. It shows KPIs
+across security domains (identity, vulnerabilities, and more) on top of your
+OCSF data.
 
-> The binding development principles live in **[`SKILL.md`](./SKILL.md)** — read
-> it first. In short: config drives everything, KPIs sit on the OCSF gold layer,
-> the data plane is 100% DABs-native (no imperative scripts), the app enforces
-> On-Behalf-Of (OBO) auth end-to-end, and adding a domain is a pure YAML edit.
+**You configure it, you don't code it.** Everything — domains, measures, KPIs,
+thresholds, Genie Spaces — lives in **`app/cyber360.yaml`**. Adding a domain is a
+YAML edit, not a code change.
+
+> New here? Read **[`SKILL.md`](./SKILL.md)** first for the design principles.
 
 ---
 
 ## Architecture
 
-Two cleanly separated planes, both deployed by one Databricks Asset Bundle
-(`databricks.yml`):
+One Databricks Asset Bundle (`databricks.yml`) deploys two parts:
 
-**Data plane (declarative, no scripts).** A config-driven **Lakeflow Declarative
-Pipeline** reads the OCSF gold tables, generates a **UC Metric View** per domain
-(the governed semantic layer), and materializes their measures into two generic
-aggregate tables — `agg_daily` (daily-grain series for trends) and `agg_rollup`
-(30/60/90-day windows + period-over-period deltas for KPI tiles). Native
-`synced_database_tables` reverse-ETL those aggregates into Lakebase Postgres as
-read-only tables.
+**Data plane.** A **Lakeflow pipeline** reads your OCSF gold tables, builds a
+**UC Metric View** per domain, and rolls the measures into two tables:
+`agg_daily` (daily trends) and `agg_rollup` (30/60/90-day KPI tiles). Synced
+tables copy those into **Lakebase** (managed Postgres) as read-only.
 
-**App plane (FastAPI + React).** The app serves the built SPA + JSON APIs. KPI
-reads come from the synced Lakebase aggregates over a **per-request OBO
-connection**, so Unity Catalog permissions are enforced all the way down to
-Postgres (no data access = no app access). The app also owns three read-write
-state tables (preferences, chats, sessions) that it bootstraps itself with
-idempotent `CREATE TABLE IF NOT EXISTS` migrations at startup. SQL Warehouse /
-Genie are used **only** for the interactive Genie drawer, never for KPI reads.
+**App plane (FastAPI + React).** The app reads the KPIs from Lakebase and serves
+the dashboard. It connects to Postgres as the app's service principal — which
+inherits read access through a Databricks reader group (see [Deploy](#deploy)).
+It also owns three state tables (preferences, chats, sessions) it creates itself
+at startup. SQL Warehouse / Genie are used **only** for the interactive Genie
+drawer, never for KPI reads.
 
 ```
 OCSF gold ─▶ Lakeflow pipeline ─▶ UC Metric Views ─▶ agg_daily / agg_rollup ─▶ (synced) ─▶ Lakebase
-                                                                                              │ OBO
+                                                                                              │
 React SPA ─▶ FastAPI ─▶ LakebaseProvider (KPI reads) ─────────────────────────────────────────┘
                      └─ SeedProvider (in-memory OCSF synthesis; zero workspace deps, local/demo)
 ```
@@ -229,7 +227,7 @@ RAG thresholds. Reference it from `health` or `top_line_kpis`, then redeploy.
 - [ ] `databricks bundle validate -t dev` → `Validation OK!`
 - [ ] `make build` produces `app/frontend/dist/`.
 - [ ] Pipeline run materializes `agg_daily` / `agg_rollup`; synced tables land in Lakebase.
-- [ ] **OBO:** a user without grants sees "Access restricted", not data.
+- [ ] **Reader grant:** after `cyber360_grant_reader_role`, KPIs load (HTTP 200); skip it and the metrics API 500s.
 - [ ] **Config onboarding:** add a domain in YAML → `/domain/<key>` renders with no code change.
 - [ ] Reporting-period (30/60/90d) deltas + trend charts read from the synced aggregates.
 - [ ] Preferences + chats persist across sessions (app-owned state tables).
