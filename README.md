@@ -115,6 +115,52 @@ databricks bundle run cyber360_app -t dev $VARS
 > are valid and deploy correctly; **do not remove them to silence the warnings** (that
 > breaks the deploy). Upgrade the CLI to clear them.
 
+### Deploy from the workspace UI (Git folder)
+
+Prefer the UI, or don't have the CLI locally? Sync the repo into a **Git folder**
+and run the bundle from a workspace terminal. Because you're inside the target
+workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
+
+1. **Add the Git folder.** In the workspace sidebar: **Workspace → Repos** (or
+   your user folder) → **Add → Git folder**. Paste the repo URL, pick the branch
+   (`feature/kpi-formatting-reporting-period` or `main`), and **Create**.
+2. **Pull latest** any time with the **⟳ (Git)** button on the folder → **Pull**.
+3. **Open a terminal in the workspace.** Use a notebook's **web terminal**
+   (attach any cluster → the `%sh`/terminal), or a compute node's terminal, then
+   `cd` into the Git folder (e.g. `cd /Workspace/Repos/<you>/databricks-cyber-unified`).
+4. **Run the same two-phase flow** as above — the CLI is preinstalled on
+   Databricks compute, so the `databricks bundle …` commands work as-is:
+
+   ```bash
+   export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
+   databricks bundle deploy -t dev $VARS                    # phase 1 (synced tables fail — expected)
+   databricks bundle run cyber360_data_plane -t dev $VARS   # build aggregates
+   databricks bundle deploy -t dev $VARS                    # phase 2 (synced tables succeed)
+   databricks bundle run cyber360_grant_reader_role -t dev $VARS
+   databricks bundle run cyber360_app -t dev $VARS          # app live
+   ```
+
+5. **Find the running app** under **Compute → Apps → `cyber360-dashboard`** (its
+   URL is also printed by step 5).
+
+> After a `git add app/frontend/dist` rebuild or any code change, **Pull** the Git
+> folder again before re-running `bundle deploy` so the workspace copy is current.
+
+### The `prod` target
+
+Everything above uses `-t dev`, which is the supported flow. The `prod` target
+exists as scaffolding but **fails `bundle validate -t prod`** with:
+
+```
+target with 'mode: production' cannot include a pipeline with 'development: true'
+```
+
+This is a Databricks guardrail, not a bug: a `mode: production` target refuses a
+pipeline flagged `development: true` (dev-mode pipelines reuse compute and relax
+retry semantics — not safe to ship as prod). It never fires while you deploy
+`-t dev`. To actually use `prod`, make the pipeline's `development` flag a
+per-target variable (`true` for dev, `false` for prod) before deploying `-t prod`.
+
 **Bring-your-own-data.** The bundled synthetic data is a convenience, not a
 requirement. The `load_synthetic_data` variable (**default `true`**) gates the
 pipeline's demo-load stage. Point the config at your own OCSF gold tables and
