@@ -367,6 +367,15 @@ resources:
       resources:
         - name: "lakebase"
           postgres:
+            # Binding stays on the PRODUCTION branch even for a feature deploy that
+            # points the app at a FORK (app_connect_branch): a Lakebase fork
+            # inherits the parent branch's roles + grants, so the SP's branch-level
+            # CAN_CONNECT_AND_CREATE granted here carries to every fork. VERIFIED
+            # end-to-end -- a fork off production exposed the identical SP role,
+            # reader-group role, USAGE + SELECT grants, and synced KPI data. So the
+            # env var (LAKEBASE_ENDPOINT_NAME) steers the connection target while
+            # this binding (the grant) lives on the parent and is inherited. (The
+            # fork is not a DAB-managed resource, so it cannot be referenced here.)
             branch: ${resources.postgres_branches.cyber360_production.name}
             # Full database path (projects/<id>/branches/<id>/databases/<id>); the
             # API rejects a bare logical name here.
