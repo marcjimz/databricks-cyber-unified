@@ -250,9 +250,12 @@ MCP skills that drive it from coding agents) when the team needs it.
 1. `ci.yml` runs the cheap gate — ruff, SPA build, migration + bundle validation.
 2. `feature-deploy.yml`:
    - forks a **paired Lakebase branch** off `production`
-     (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data
-     and read-write endpoint. The fork **inherits prod's roles/grants**, so the
-     app SP CONNECT + reader-group SELECT carry over (no extra grant step);
+     (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data.
+     A fork **auto-inherits** an RW endpoint (named `primary`, like the parent)
+     and the parent's **roles/grants**, so the app SP CONNECT + reader-group
+     SELECT carry over with no extra grant step. (The script discovers the
+     inherited endpoint rather than creating one; branches carry a 7-day TTL as a
+     cleanup safety net.);
    - deploys the app to `dev` pointed at that branch via
      `--var app_connect_branch=<id> --var app_connect_endpoint=<id>`
      (dev-mode also per-identity-prefixes the app, so the instance is isolated);

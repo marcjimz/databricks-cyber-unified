@@ -40,10 +40,10 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
+          # Deleting the branch cascades its (undeletable) RW endpoint.
           python3 .github/scripts/lakebase_branch.py delete \
             --project "$LAKEBASE_PROJECT" \
-            --branch-id "${{ steps.ids.outputs.branch_id }}" \
-            --endpoint-id "${{ steps.ids.outputs.endpoint_id }}"
+            --branch-id "${{ steps.ids.outputs.branch_id }}"
 
       - name: Summary
         if: always()

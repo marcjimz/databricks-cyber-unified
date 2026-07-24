@@ -32,6 +32,8 @@ import argparse
 import json
 import sys
 
+from google.protobuf.duration_pb2 import Duration
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.postgres import (
     Branch,
@@ -65,27 +67,43 @@ def create(ws: WorkspaceClient, args: argparse.Namespace) -> dict:
         print(f"branch exists: {branch_path}", file=sys.stderr)
     except Exception:
         print(f"forking branch {args.branch_id} from {args.source_branch}", file=sys.stderr)
+        ttl = Duration()
+        ttl.FromSeconds(args.ttl_seconds)
         op = ws.postgres.create_branch(
             parent=project_path,
             branch_id=args.branch_id,
             branch=Branch(
                 spec=BranchSpec(
                     source_branch=_branch_path(args.project, args.source_branch),
-                    # Feature branches are ephemeral; let them expire if a teardown
-                    # is ever missed. no_expiry stays False (the default).
                     is_protected=False,
+                    # The API REQUIRES an expiration policy on create. Feature
+                    # branches are ephemeral, so set a TTL -- this auto-cleans the
+                    # fork if a PR-close teardown is ever missed. ttl is a
+                    # protobuf Duration (default 604800s = 7 days).
+                    ttl=ttl,
                 )
             ),
         )
         op.wait()
         print(f"branch ready: {branch_path}", file=sys.stderr)
 
-    # 2. Create a read-write endpoint on the forked branch, unless it exists.
-    try:
-        ws.postgres.get_endpoint(name=endpoint_path)
-        print(f"endpoint exists: {endpoint_path}", file=sys.stderr)
-    except Exception:
-        print(f"creating RW endpoint {args.endpoint_id}", file=sys.stderr)
+    # 2. Discover the branch's endpoint. A forked branch AUTO-INHERITS a
+    #    read-write endpoint (named like the parent's, typically `primary`), and a
+    #    branch may hold only one RW endpoint -- so we discover it rather than
+    #    create one. Fall back to creating an RW endpoint only if none exists.
+    endpoints = list(ws.postgres.list_endpoints(parent=branch_path))
+    if endpoints:
+        # Prefer an explicitly READ_WRITE endpoint; else take the first.
+        chosen = next(
+            (e for e in endpoints
+             if e.spec and e.spec.endpoint_type == EndpointType.ENDPOINT_TYPE_READ_WRITE),
+            endpoints[0],
+        )
+        endpoint_id = chosen.name.rsplit("/", 1)[-1]
+        endpoint_path = chosen.name
+        print(f"using inherited endpoint: {endpoint_path}", file=sys.stderr)
+    else:
+        print(f"no endpoint on fork; creating RW endpoint {args.endpoint_id}", file=sys.stderr)
         op = ws.postgres.create_endpoint(
             parent=branch_path,
             endpoint_id=args.endpoint_id,
@@ -98,36 +116,34 @@ def create(ws: WorkspaceClient, args: argparse.Namespace) -> dict:
             ),
         )
         op.wait()
+        endpoint_id = args.endpoint_id
         print(f"endpoint ready: {endpoint_path}", file=sys.stderr)
 
     return {
         "project": args.project,
         "branch_id": args.branch_id,
-        "endpoint_id": args.endpoint_id,
+        "endpoint_id": endpoint_id,
         "branch_path": branch_path,
         "endpoint_path": endpoint_path,
     }
 
 
 def delete(ws: WorkspaceClient, args: argparse.Namespace) -> dict:
-    endpoint_path = _endpoint_path(args.project, args.branch_id, args.endpoint_id)
     branch_path = _branch_path(args.project, args.branch_id)
 
-    # Delete the endpoint first (child of the branch), then the branch.
-    for label, path, fn in (
-        ("endpoint", endpoint_path, ws.postgres.delete_endpoint),
-        ("branch", branch_path, ws.postgres.delete_branch),
-    ):
-        try:
-            op = fn(name=path)
-            wait = getattr(op, "wait", None)
-            if callable(wait):
-                wait()
-            print(f"deleted {label}: {path}", file=sys.stderr)
-        except Exception as exc:  # noqa: BLE001 -- not-found is fine on teardown
-            print(f"skip {label} {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    # Delete the branch only. A branch's read-write endpoint CANNOT be deleted
+    # directly (the API rejects it), but deleting the branch cascades and removes
+    # the endpoint with it -- so one call tears down the whole fork.
+    try:
+        op = ws.postgres.delete_branch(name=branch_path)
+        wait = getattr(op, "wait", None)
+        if callable(wait):
+            wait()
+        print(f"deleted branch (cascades endpoint): {branch_path}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 -- not-found is fine on teardown
+        print(f"skip branch {branch_path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    return {"deleted_branch": branch_path, "deleted_endpoint": endpoint_path}
+    return {"deleted_branch": branch_path}
 
 
 def main() -> int:
@@ -141,11 +157,15 @@ def main() -> int:
     c.add_argument("--endpoint-id", required=True)
     c.add_argument("--min-cu", type=float, default=0.5)
     c.add_argument("--max-cu", type=float, default=1.0)
+    c.add_argument("--ttl-seconds", type=int, default=604800,
+                   help="Branch TTL in seconds (default 7 days). Auto-cleanup "
+                        "safety net beyond PR-close teardown.")
 
-    d = sub.add_parser("delete", help="Delete a paired feature branch + endpoint")
+    d = sub.add_parser("delete", help="Delete a paired feature branch (cascades its endpoint)")
     d.add_argument("--project", required=True)
     d.add_argument("--branch-id", required=True)
-    d.add_argument("--endpoint-id", required=True)
+    # Accepted for symmetry but unused: deleting the branch cascades the endpoint.
+    d.add_argument("--endpoint-id", required=False, default="")
 
     args = ap.parse_args()
     ws = WorkspaceClient()

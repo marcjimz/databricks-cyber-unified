@@ -62,16 +62,23 @@ jobs:
           echo "Paired Lakebase branch id: $SAFE"
 
       - name: Fork paired Lakebase branch off production
+        id: fork
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          python3 .github/scripts/lakebase_branch.py create \
+          # The script forks the branch and DISCOVERS its inherited endpoint
+          # (a fork auto-creates an RW endpoint, usually `primary`). Capture the
+          # real branch_id + endpoint_id from its JSON stdout.
+          OUT=$(python3 .github/scripts/lakebase_branch.py create \
             --project "$LAKEBASE_PROJECT" \
             --source-branch production \
             --branch-id "${{ steps.ids.outputs.branch_id }}" \
             --endpoint-id "${{ steps.ids.outputs.endpoint_id }}" \
-            --min-cu 0.5 --max-cu 1
+            --min-cu 0.5 --max-cu 1)
+          echo "$OUT"
+          echo "branch_id=$(echo "$OUT"   | python3 -c 'import sys,json; print(json.load(sys.stdin)["branch_id"])')"   >> "$GITHUB_OUTPUT"
+          echo "endpoint_id=$(echo "$OUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["endpoint_id"])')" >> "$GITHUB_OUTPUT"
 
       - name: Deploy app pointed at the forked branch
         env:
@@ -82,14 +89,14 @@ jobs:
             --var catalog="$CATALOG" \
             --var warehouse_id="$WAREHOUSE_ID" \
             --var lakebase_owner_role="$OWNER_ROLE" \
-            --var app_connect_branch="${{ steps.ids.outputs.branch_id }}" \
-            --var app_connect_endpoint="${{ steps.ids.outputs.endpoint_id }}"
+            --var app_connect_branch="${{ steps.fork.outputs.branch_id }}" \
+            --var app_connect_endpoint="${{ steps.fork.outputs.endpoint_id }}"
           databricks bundle run cyber360_app -t dev \
             --var catalog="$CATALOG" \
             --var warehouse_id="$WAREHOUSE_ID" \
             --var lakebase_owner_role="$OWNER_ROLE" \
-            --var app_connect_branch="${{ steps.ids.outputs.branch_id }}" \
-            --var app_connect_endpoint="${{ steps.ids.outputs.endpoint_id }}"
+            --var app_connect_branch="${{ steps.fork.outputs.branch_id }}" \
+            --var app_connect_endpoint="${{ steps.fork.outputs.endpoint_id }}"
 
       - name: Smoke test (app health)
         env:
@@ -100,8 +107,8 @@ jobs:
           URL=$(databricks bundle summary -t dev -o json \
             --var catalog="$CATALOG" --var warehouse_id="$WAREHOUSE_ID" \
             --var lakebase_owner_role="$OWNER_ROLE" \
-            --var app_connect_branch="${{ steps.ids.outputs.branch_id }}" \
-            --var app_connect_endpoint="${{ steps.ids.outputs.endpoint_id }}" \
+            --var app_connect_branch="${{ steps.fork.outputs.branch_id }}" \
+            --var app_connect_endpoint="${{ steps.fork.outputs.endpoint_id }}" \
             2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['resources']['apps']['cyber360_app'].get('url',''))" || true)
           if [ -z "$URL" ]; then
             echo "::warning::Could not resolve app URL from bundle summary; skipping HTTP smoke test."
@@ -122,7 +129,7 @@ jobs:
           {
             echo "### Feature environment :rocket:"
             echo "- Git branch: \`${GITHUB_REF_NAME}\`"
-            echo "- Paired Lakebase branch: \`${{ steps.ids.outputs.branch_id }}\` (forked from production)"
+            echo "- Paired Lakebase branch: \`${{ steps.fork.outputs.branch_id }}\` (forked from production)"
             echo "- App: dev target, isolated (per-identity prefixed), connected to the forked branch"
             echo ""
             echo "The branch is torn down automatically when the PR closes."
