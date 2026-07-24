@@ -51,6 +51,20 @@ variables:
   lakebase_endpoint:
     description: "Lakebase endpoint id -- the project's auto-created primary read-write endpoint"
     default: "primary"
+  # ── App connection target (branch/endpoint the APP connects to) ──
+  # These default to the managed production branch/endpoint above, so the normal
+  # path is unchanged. For an ISOLATED FEATURE deploy, a paired Lakebase branch is
+  # forked from production out-of-band (see .github/scripts/lakebase_branch.py),
+  # then the app is deployed with `--var app_connect_branch=<feature-branch-id>
+  # --var app_connect_endpoint=<feature-endpoint-id>` so it connects to the forked
+  # branch's own data + endpoint. The managed postgres_* resources still manage
+  # production only; these vars ONLY steer the app's connection target + binding.
+  app_connect_branch:
+    description: "Lakebase branch id the APP connects to (defaults to the production branch)."
+    default: "production"
+  app_connect_endpoint:
+    description: "Lakebase endpoint id the APP connects to (defaults to the primary endpoint)."
+    default: "primary"
   lakebase_min_cu:
     description: "Lakebase endpoint autoscaling floor in Compute Units (min 0.5)"
     default: 0.5
@@ -408,8 +422,13 @@ resources:
           # PGHOST via postgres.get_endpoint(name=...). Composed from the same
           # DAB vars that define the project/branch/endpoint resources, so it is
           # never hardcoded and always tracks the deployed topology.
+          # Uses app_connect_branch/endpoint (default = production/primary) so a
+          # feature deploy can point the app at a forked Lakebase branch without
+          # touching the managed production resources. A branch fork inherits the
+          # parent's roles/grants, so the app SP's CONNECT + the reader group's
+          # SELECT carry to the fork.
           - name: LAKEBASE_ENDPOINT_NAME
-            value: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/${var.lakebase_endpoint}
+            value: projects/${var.lakebase_project}/branches/${var.app_connect_branch}/endpoints/${var.app_connect_endpoint}
           - name: LAKEBASE_DATABASE_NAME
             value: ${var.lakebase_database}
           # Databricks GROUP role the KPI read path connects as. The app SP is a
