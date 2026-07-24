@@ -1,0 +1,63 @@
+name: Feature deploy
+
+# Realizes "a new feature branch gets its own isolated deploy target".
+#
+# On every push to a feature/** branch, deploy the bundle to the dev target in
+# development mode. `mode: development` automatically PREFIXES every resource
+# name with the deploying identity + a hash, so each branch's app, pipeline and
+# Lakebase objects are isolated and never collide with another branch or with
+# the shared dev deployment. This is the lightweight, single-workspace version
+# of the paired git/Lakebase branching in the lakebase-app-dev-kit.
+#
+# NOTE: this deploys phase-1 only (bundle deploy). The data-plane run, the
+# reader-role grant, and the app start are intentionally left as manual/gated
+# steps (they cost compute and mutate data) -- see the operationalization guide.
+
+on:
+  push:
+    branches:
+      - "feature/**"
+
+concurrency:
+  # One deploy per branch at a time; newer pushes cancel in-flight ones.
+  group: feature-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy feature branch to dev (isolated)
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build SPA
+        run: cd app/frontend && npm ci && npm run build
+
+      - uses: databricks/setup-cli@main
+
+      - name: Deploy bundle (dev, development mode -> per-branch prefixed)
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          # Deploy-time overrides. Set these as repo/environment variables so the
+          # workflow is portable across workspaces (see the guide's "Set these
+          # first" table). Host is provided by the secret above.
+          CATALOG: ${{ vars.CYBER360_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+        run: |
+          databricks bundle deploy -t dev \
+            --var catalog="$CATALOG" \
+            --var warehouse_id="$WAREHOUSE_ID" \
+            --var lakebase_owner_role="$OWNER_ROLE"
+
+      - name: Summary
+        run: |
+          echo "### Feature branch deployed to dev (isolated) :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Branch \`${GITHUB_REF_NAME}\` deployed in development mode." >> "$GITHUB_STEP_SUMMARY"
+          echo "Resource names are prefixed per-identity, so this does not touch" >> "$GITHUB_STEP_SUMMARY"
+          echo "the shared dev deployment. Run the data plane + grant + app manually." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,70 @@
+name: CI
+
+# PR gate: lint, build the SPA, validate the bundle, and check migrations parse.
+# No workspace credentials are needed for lint/build; bundle validate runs
+# offline against the dev target (host comes from the DATABRICKS_HOST secret when
+# present, else validation still checks config structure).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend lint + migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend (with dev tools)
+        run: cd app && pip install -e ".[dev]"
+      - name: Ruff lint
+        run: cd app && ruff check .
+      - name: Migration files are well-formed
+        # Every migrations/versions/*.sql must match NNNN__name.sql and versions
+        # must be unique + contiguous-ish (ascending). Fails the PR otherwise.
+        run: python .github/scripts/check_migrations.py
+
+  frontend:
+    name: Frontend lint + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install frontend
+        run: cd app/frontend && npm ci
+      - name: Lint
+        run: cd app/frontend && npm run lint
+      - name: Build SPA
+        run: cd app/frontend && npm run build
+      - name: SPA build is committed and current
+        # The Databricks Apps runtime has no build step, so app/frontend/dist must
+        # be committed. Fail if a fresh build differs from what's checked in.
+        run: |
+          if ! git diff --quiet -- app/frontend/dist; then
+            echo "::error::app/frontend/dist is stale. Run 'make build' and commit the result."
+            git --no-pager diff --stat -- app/frontend/dist
+            exit 1
+          fi
+
+  bundle:
+    name: Validate bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - name: Validate dev + tst + prod targets
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          for t in dev tst prod; do
+            echo "== validate $t =="
+            databricks bundle validate -t "$t"
+          done

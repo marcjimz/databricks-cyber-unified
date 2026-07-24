@@ -87,6 +87,13 @@ variables:
   genie_vulnerability_embed_url:
     description: "Genie Space embed URL for the Vulnerability Management domain drawer"
     default: ""
+  pipeline_development:
+    description: >-
+      Whether the Lakeflow pipeline runs in development mode (reuses compute,
+      relaxed retries -- fast iteration). MUST be false for a `mode: production`
+      target, which rejects a development pipeline. Defaults true for dev/tst and
+      is overridden to false in the prod target below.
+    default: true
 
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
@@ -190,7 +197,7 @@ resources:
       serverless: true
       channel: PREVIEW
       continuous: false
-      development: true
+      development: ${var.pipeline_development}
       configuration:
         cyber360.catalog: ${var.catalog}
         cyber360.schema: ${resources.schemas.cyber360_schema.name}
@@ -436,12 +443,25 @@ resources:
 # DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
+  # Dev: per-developer sandbox. `mode: development` prefixes resource names with
+  # the deploying user, so many feature branches can coexist in one workspace
+  # (see the feature-development flow in the operationalization guide).
   dev:
     default: true
     mode: development
 
+  # Test / staging: a shared integration environment that mirrors prod topology
+  # but still runs the pipeline in development mode for fast rebuilds. Promote
+  # here from dev before prod.
+  tst:
+    mode: development
+
+  # Prod: the released application, sourced from `main`. The pipeline must NOT be
+  # in development mode here (mode: production rejects it), so pin the flag false.
   prod:
     mode: production
+    variables:
+      pipeline_development: false
     resources:
       apps:
         cyber360_app:

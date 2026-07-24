@@ -1,0 +1,81 @@
+name: Promote
+
+# Release-style promotion. Merging to `main` is the release event: it deploys
+# the bundle to the tst target for integration verification. Promotion to prod
+# is a MANUAL, gated step (workflow_dispatch) so a human approves the prod
+# release -- the shared/prod app is always sourced from `main`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target to promote to"
+        required: true
+        default: tst
+        type: choice
+        options: [tst, prod]
+
+jobs:
+  promote:
+    name: Deploy ${{ github.event.inputs.target || 'tst' }}
+    runs-on: ubuntu-latest
+    # `prod` promotion runs against the protected 'prod' GitHub environment, so
+    # required reviewers gate it. push-to-main promotes to tst automatically.
+    environment: ${{ github.event.inputs.target || 'tst' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build SPA
+        run: cd app/frontend && npm ci && npm run build
+
+      - uses: databricks/setup-cli@main
+
+      - name: Resolve target
+        id: t
+        run: echo "target=${{ github.event.inputs.target || 'tst' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy bundle
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          CATALOG: ${{ vars.CYBER360_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+        run: |
+          databricks bundle deploy -t "${{ steps.t.outputs.target }}" \
+            --var catalog="$CATALOG" \
+            --var warehouse_id="$WAREHOUSE_ID" \
+            --var lakebase_owner_role="$OWNER_ROLE"
+
+      # Migrations run automatically at app startup, but we run the data plane and
+      # reader-role grant here so a promoted environment is fully live. These are
+      # idempotent. Comment out if you prefer to gate them manually.
+      - name: Build data plane
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          CATALOG: ${{ vars.CYBER360_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+        run: |
+          databricks bundle run cyber360_data_plane -t "${{ steps.t.outputs.target }}" \
+            --var catalog="$CATALOG" --var warehouse_id="$WAREHOUSE_ID" --var lakebase_owner_role="$OWNER_ROLE"
+
+      - name: Re-deploy (bind synced tables) + grant reader role + start app
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          CATALOG: ${{ vars.CYBER360_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+        run: |
+          T="${{ steps.t.outputs.target }}"
+          VARS="--var catalog=$CATALOG --var warehouse_id=$WAREHOUSE_ID --var lakebase_owner_role=$OWNER_ROLE"
+          databricks bundle deploy -t "$T" $VARS
+          databricks bundle run cyber360_grant_reader_role -t "$T" $VARS
+          databricks bundle run cyber360_app -t "$T" $VARS
