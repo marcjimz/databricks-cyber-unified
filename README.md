@@ -157,9 +157,9 @@ target with 'mode: production' cannot include a pipeline with 'development: true
 
 This is a Databricks guardrail, not a bug: a `mode: production` target refuses a
 pipeline flagged `development: true` (dev-mode pipelines reuse compute and relax
-retry semantics — not safe to ship as prod). It never fires while you deploy
-`-t dev`. To actually use `prod`, make the pipeline's `development` flag a
-per-target variable (`true` for dev, `false` for prod) before deploying `-t prod`.
+retry semantics — not safe to ship as prod). The pipeline's `development` flag
+is a per-target variable (`pipeline_development`, `true` for dev/tst, pinned
+`false` for prod), so all three targets — `dev`, `tst`, `prod` — validate.
 
 **Bring-your-own-data.** The bundled synthetic data is a convenience, not a
 requirement. The `load_synthetic_data` variable (**default `true`**) gates the
@@ -169,6 +169,47 @@ flip it off:
 ```bash
 databricks bundle deploy -t dev --var load_synthetic_data=false
 ```
+
+---
+
+## CI/CD & feature environments
+
+GitHub Actions (`.github/workflows/`) automate the flow. Once set up, you get an
+**isolated environment per feature branch** and release-style promotion.
+
+### One-time setup
+
+Configure these in the GitHub repo (**Settings → Secrets and variables → Actions**):
+
+| Kind | Name | Value |
+|------|------|-------|
+| Secret | `DATABRICKS_HOST` | Target workspace URL |
+| Secret | `DATABRICKS_TOKEN` | A token for CI. **Use a service-principal token**, not a personal PAT (PATs expire and are user-scoped). |
+| Variable | `CYBER360_CATALOG` | Your UC catalog |
+| Variable | `CYBER360_WAREHOUSE_ID` | SQL warehouse id (Genie only) |
+| Variable | `CYBER360_OWNER_ROLE` | Lakebase owner role id (see Deploy) |
+| Variable | `CYBER360_LAKEBASE_PROJECT` | Lakebase project id (e.g. `cyber360-lakebase`) |
+
+Gate `prod` with a **protected GitHub environment** (`Settings → Environments`)
+with required reviewers, so promotion to prod needs human approval.
+
+### The self-serve loop (per feature)
+
+1. **Branch off `main`** with a `feature/…` name and push it.
+2. **`ci.yml`** runs the gate (ruff, SPA build, migration + bundle validation).
+3. **`feature-deploy.yml`** forks a **paired Lakebase branch** off `production`
+   (own copy-on-write snapshot of prod data), deploys the app pointed at it, and
+   checks the app reaches **RUNNING/ACTIVE**.
+4. **Test it in Databricks:** open **Compute → Apps → `cyber360-dashboard`** and
+   click the URL. (You pass the app's OAuth front door as a logged-in user; a
+   `curl` with a token does *not* — that's why CI checks app *status*, not HTTP.)
+5. **Open a PR** → merge promotes to `tst`; a gated dispatch promotes to `prod`.
+6. **Close the PR** → `feature-teardown.yml` deletes the paired Lakebase branch.
+
+> The paired-branch flow (fork → deploy → grant inheritance) is verified
+> end-to-end. See `SKILL.md §5a` for the design and the
+> [lakebase-app-dev-kit](https://github.com/databricks-solutions/lakebase-app-dev-kit)
+> as the graduation path.
 
 ---
 
