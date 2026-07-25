@@ -48,12 +48,8 @@ jobs:
           cache-dependency-path: app/frontend/package-lock.json
       - name: Build SPA
         run: |
-          cd app/frontend
-          for i in 1 2 3; do
-            npm ci --no-audit --no-fund && break
-            echo "npm ci attempt $i failed; retrying..."; rm -rf node_modules; sleep 10
-          done
-          npm run build
+          bash .github/scripts/npm-install.sh
+          cd app/frontend && npm run build
 
       - uses: databricks/setup-cli@main
 
