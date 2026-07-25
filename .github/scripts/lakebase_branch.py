@@ -21,7 +21,8 @@ Usage:
       --project cyber360-lakebase \
       --branch-id feat-add-orders --endpoint-id feat-add-orders
 
-Auth: a bare WorkspaceClient() -- DATABRICKS_HOST + DATABRICKS_TOKEN in CI.
+Auth: a bare WorkspaceClient() -- in CI, OAuth M2M via DATABRICKS_HOST +
+DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET (the SDK detects them).
 Idempotent: create is a no-op if the branch/endpoint already exist; delete
 ignores "not found". Exits non-zero on real failures.
 """

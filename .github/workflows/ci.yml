@@ -1,9 +1,10 @@
 name: CI
 
 # PR gate: lint, build the SPA, validate the bundle, and check migrations parse.
-# No workspace credentials are needed for lint/build; bundle validate runs
-# offline against the dev target (host comes from the DATABRICKS_HOST secret when
-# present, else validation still checks config structure).
+# Lint/build need no workspace credentials. Bundle validate authenticates via
+# OAuth M2M (service principal): DATABRICKS_HOST + DATABRICKS_CLIENT_ID come from
+# repo VARIABLES, DATABRICKS_CLIENT_SECRET from a repo SECRET -- the CLI detects
+# these env vars automatically (no PAT).
 
 on:
   pull_request:
@@ -65,8 +66,9 @@ jobs:
       - uses: databricks/setup-cli@main
       - name: Validate dev + tst + prod targets
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: |
           for t in dev tst prod; do
             echo "== validate $t =="

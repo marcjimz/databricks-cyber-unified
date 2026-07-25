@@ -179,16 +179,34 @@ GitHub Actions (`.github/workflows/`) automate the flow. Once set up, you get an
 
 ### One-time setup
 
-Configure these in the GitHub repo (**Settings → Secrets and variables → Actions**):
+CI authenticates with **OAuth machine-to-machine (a service principal)** — no
+personal access tokens. Only the client secret is a GitHub *secret*; everything
+else is a plain *variable*.
+
+**1. Create the service principal + OAuth secret** (workspace admin):
+- **Settings → Identity and access → Service principals → Add service principal**
+  (or reuse the app's SP). Note its **Application (client) ID**.
+- On that SP → **Secrets → Generate secret**. Copy the **Client secret** *and*
+  the **Client ID** shown — the secret is displayed only once.
+- Grant the SP what a deploy needs: workspace access (CAN_USE), `CAN_MANAGE` on
+  the app + bundle resources, `USE CATALOG`/`CREATE SCHEMA` on the catalog, and
+  membership in the Lakebase reader group. (It's the identity CI deploys as.)
+
+**2. Configure the repo** (**Settings → Secrets and variables → Actions**):
 
 | Kind | Name | Value |
 |------|------|-------|
-| Secret | `DATABRICKS_HOST` | Target workspace URL |
-| Secret | `DATABRICKS_TOKEN` | A token for CI. **Use a service-principal token**, not a personal PAT (PATs expire and are user-scoped). |
+| **Secret** | `DATABRICKS_CLIENT_SECRET` | The SP's OAuth **client secret** (from step 1). The only secret. |
+| Variable | `DATABRICKS_HOST` | Target workspace URL, e.g. `https://<ws>.cloud.databricks.com` |
+| Variable | `DATABRICKS_CLIENT_ID` | The SP's application (client) ID |
 | Variable | `CYBER360_CATALOG` | Your UC catalog |
 | Variable | `CYBER360_WAREHOUSE_ID` | SQL warehouse id (Genie only) |
 | Variable | `CYBER360_OWNER_ROLE` | Lakebase owner role id (see Deploy) |
 | Variable | `CYBER360_LAKEBASE_PROJECT` | Lakebase project id (e.g. `cyber360-lakebase`) |
+
+> The Databricks CLI auto-detects `DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` +
+> `DATABRICKS_CLIENT_SECRET` and performs the OAuth M2M token exchange itself —
+> the workflows just set these env vars, no login step needed.
 
 Gate `prod` with a **protected GitHub environment** (`Settings → Environments`)
 with required reviewers, so promotion to prod needs human approval.

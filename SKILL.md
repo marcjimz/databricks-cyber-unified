@@ -280,10 +280,11 @@ always sourced from `main` — never a feature branch.
 - **Verify on the paired app, not prod.** The feature app connects to the fork,
   so you test schema + UI against a real snapshot of prod data safely.
 
-**Required CI settings** (repo/environment): secrets `DATABRICKS_HOST`,
-`DATABRICKS_TOKEN`; variables `CYBER360_CATALOG`, `CYBER360_WAREHOUSE_ID`,
+**Required CI settings** (repo/environment): OAuth M2M via a service principal —
+secret `DATABRICKS_CLIENT_SECRET`; variables `DATABRICKS_HOST`,
+`DATABRICKS_CLIENT_ID`, `CYBER360_CATALOG`, `CYBER360_WAREHOUSE_ID`,
 `CYBER360_OWNER_ROLE`, `CYBER360_LAKEBASE_PROJECT`. Gate `prod` with a protected
-GitHub environment + required reviewers.
+GitHub environment + required reviewers. (No PATs.)
 
 ---
 

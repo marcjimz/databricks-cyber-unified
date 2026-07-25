@@ -45,8 +45,9 @@ jobs:
 
       - name: Deploy bundle
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           CATALOG: ${{ vars.CYBER360_CATALOG }}
           WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
           OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
@@ -61,8 +62,9 @@ jobs:
       # idempotent. Comment out if you prefer to gate them manually.
       - name: Build data plane
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           CATALOG: ${{ vars.CYBER360_CATALOG }}
           WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
           OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
@@ -72,8 +74,9 @@ jobs:
 
       - name: Re-deploy (bind synced tables) + grant reader role + start app
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
           CATALOG: ${{ vars.CYBER360_CATALOG }}
           WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
           OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}

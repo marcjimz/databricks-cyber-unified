@@ -21,7 +21,8 @@ concurrency:
 
 env:
   # Deploy-time overrides live as repo/environment variables so the workflow is
-  # portable across workspaces. Host + token come from secrets.
+  # portable across workspaces. Auth is OAuth M2M (SP): DATABRICKS_HOST +
+  # DATABRICKS_CLIENT_ID are repo variables, DATABRICKS_CLIENT_SECRET a secret.
   CATALOG: ${{ vars.CYBER360_CATALOG }}
   WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
   OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
@@ -68,8 +69,9 @@ jobs:
       - name: Fork paired Lakebase branch off production
         id: fork
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: |
           # The script forks the branch and DISCOVERS its inherited endpoint
           # (a fork auto-creates an RW endpoint, usually `primary`). Capture the
@@ -86,8 +88,9 @@ jobs:
 
       - name: Deploy app pointed at the forked branch
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: |
           databricks bundle deploy -t dev \
             --var catalog="$CATALOG" \
@@ -104,8 +107,9 @@ jobs:
 
       - name: Smoke test (app reaches RUNNING/ACTIVE)
         env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: |
           # We check the app reaches RUNNING/ACTIVE via `databricks apps get`, NOT
           # an HTTP call to /api/health. The Databricks Apps OAuth front door
