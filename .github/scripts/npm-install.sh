@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Robust frontend dependency install for CI.
 #
-# The GitHub runner's npm has been hanging on `npm ci` for ~8 min and then dying
-# with "Exit handler never called!" (an npm-internal bug), even though the
-# lockfile installs cleanly in seconds locally. This wrapper:
-#   * bounds each attempt with a hard timeout (fail fast, don't hang the job),
-#   * retries, and falls back from `npm ci` to `npm install` (a different npm
-#     code path that commonly sidesteps the hang),
+# ROOT CAUSE (diagnosed from CI logs): the runner's default npm 11.x (bundled
+# with Node 24) hangs for ~8 min on BOTH `npm ci` and `npm install`, then dies
+# with "Exit handler never called!" -- a known npm 11 bug. It is NOT a lockfile
+# problem (installs in ~9s locally on npm 10). The fix is to pin npm to a
+# known-good v10 before installing.
+#
+# This wrapper therefore:
+#   * pins npm to 10.x (the actual fix),
+#   * bounds each attempt with a hard timeout that also SIGKILLs a wedged npm
+#     (plain SIGTERM is ignored while npm is stuck in its broken exit handler),
+#   * retries ci -> ci -> install,
 #   * VERIFIES the eslint binary exists at the end so the step fails loudly
 #     instead of passing green with no node_modules.
 set -uo pipefail
@@ -16,14 +21,15 @@ cd "$(dirname "$0")/../../app/frontend"
 ATTEMPT_TIMEOUT="${NPM_ATTEMPT_TIMEOUT:-240}"   # seconds per attempt
 COMMON_FLAGS="--no-audit --no-fund --no-progress"
 
-# Prefer coreutils `timeout` (present on GitHub Ubuntu runners); fall back to
-# `gtimeout` (macOS/Homebrew) or no timeout at all if neither exists.
+# Prefer coreutils `timeout` (GitHub Ubuntu runners); fall back to `gtimeout`
+# (macOS/Homebrew) or no timeout if neither exists. --kill-after sends SIGKILL
+# 30s after SIGTERM so a wedged npm can't outlive the timeout.
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 
 try() {
   echo "::group::npm $* (timeout ${ATTEMPT_TIMEOUT}s)"
   if [ -n "${TIMEOUT_BIN}" ]; then
-    "${TIMEOUT_BIN}" "${ATTEMPT_TIMEOUT}" npm "$@" ${COMMON_FLAGS}
+    "${TIMEOUT_BIN}" --kill-after=30 "${ATTEMPT_TIMEOUT}" npm "$@" ${COMMON_FLAGS}
   else
     npm "$@" ${COMMON_FLAGS}
   fi
@@ -31,6 +37,11 @@ try() {
   echo "::endgroup::"
   return $rc
 }
+
+# The actual fix: pin npm to a known-good v10 (the runner default npm 11 hangs).
+echo "npm before pin: $(npm --version 2>/dev/null || echo '?')"
+npm install -g npm@10 --no-audit --no-fund >/dev/null 2>&1 || echo "warn: could not pin npm@10; continuing"
+echo "npm after pin:  $(npm --version 2>/dev/null || echo '?')"
 
 npm cache verify >/dev/null 2>&1 || true
 
