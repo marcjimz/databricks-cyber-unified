@@ -39,11 +39,25 @@ jobs:
 
       - uses: databricks/setup-cli@main
 
+      - name: Check for Databricks credentials
+        id: creds
+        env:
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: |
+          if [ -n "$DATABRICKS_CLIENT_SECRET" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Databricks OAuth credentials not configured -- skipping promotion deploy. Add the repo secret + variables to enable."
+          fi
+
       - name: Resolve target
+        if: steps.creds.outputs.configured == 'true'
         id: t
         run: echo "target=${{ github.event.inputs.target || 'tst' }}" >> "$GITHUB_OUTPUT"
 
       - name: Deploy bundle
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
@@ -61,6 +75,7 @@ jobs:
       # reader-role grant here so a promoted environment is fully live. These are
       # idempotent. Comment out if you prefer to gate them manually.
       - name: Build data plane
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
@@ -73,6 +88,7 @@ jobs:
             --var catalog="$CATALOG" --var warehouse_id="$WAREHOUSE_ID" --var lakebase_owner_role="$OWNER_ROLE"
 
       - name: Re-deploy (bind synced tables) + grant reader role + start app
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}

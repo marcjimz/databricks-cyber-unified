@@ -26,7 +26,20 @@ jobs:
           python-version: "3.11"
       - run: pip install "databricks-sdk>=0.102.0"
 
+      - name: Check for Databricks credentials
+        id: creds
+        env:
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: |
+          if [ -n "$DATABRICKS_CLIENT_SECRET" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Databricks OAuth credentials not configured -- skipping paired-branch teardown."
+          fi
+
       - name: Derive the same branch id feature-deploy used
+        if: steps.creds.outputs.configured == 'true'
         id: ids
         run: |
           RAW="${GITHUB_HEAD_REF#feature/}"
@@ -36,6 +49,7 @@ jobs:
           echo "endpoint_id=$SAFE" >> "$GITHUB_OUTPUT"
 
       - name: Delete branch + endpoint
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}

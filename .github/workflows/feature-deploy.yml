@@ -54,7 +54,20 @@ jobs:
 
       - uses: databricks/setup-cli@main
 
+      - name: Check for Databricks credentials
+        id: creds
+        env:
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: |
+          if [ -n "$DATABRICKS_CLIENT_SECRET" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Databricks OAuth credentials not configured -- skipping paired-branch fork + deploy. Add the repo secret + variables to enable."
+          fi
+
       - name: Derive a safe Lakebase branch id from the git branch
+        if: steps.creds.outputs.configured == 'true'
         id: ids
         run: |
           # Lakebase ids: lowercase alphanumeric + hyphens, 3-63 chars.
@@ -67,6 +80,7 @@ jobs:
           echo "Paired Lakebase branch id: $SAFE"
 
       - name: Fork paired Lakebase branch off production
+        if: steps.creds.outputs.configured == 'true'
         id: fork
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
@@ -87,6 +101,7 @@ jobs:
           echo "endpoint_id=$(echo "$OUT" | python3 -c 'import sys,json; print(json.load(sys.stdin)["endpoint_id"])')" >> "$GITHUB_OUTPUT"
 
       - name: Deploy app pointed at the forked branch
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
@@ -106,6 +121,7 @@ jobs:
             --var app_connect_endpoint="${{ steps.fork.outputs.endpoint_id }}"
 
       - name: Smoke test (app reaches RUNNING/ACTIVE)
+        if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
@@ -143,6 +159,12 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          if [ "${{ steps.creds.outputs.configured }}" != "true" ]; then
+            echo "### Feature deploy skipped :warning:" >> "$GITHUB_STEP_SUMMARY"
+            echo "Databricks OAuth credentials are not configured, so the paired-branch" >> "$GITHUB_STEP_SUMMARY"
+            echo "fork + deploy were skipped. Add the repo secret + variables to enable." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "### Feature environment :rocket:"
             echo "- Git branch: \`${GITHUB_REF_NAME}\`"
