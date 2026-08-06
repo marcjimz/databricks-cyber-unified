@@ -235,6 +235,57 @@ them in Lakebase automatically. **No component changes, no scripts.**
 5. **Don't leave the repo root dirty.** Temp/scratch dirs stay inside the repo and
    get added to `.gitignore`. Never write outside the repo root.
 
+### 5a. Code & data flow updates — how it actually runs (automated)
+
+The branch discipline above is **automated by CI** so it happens the same way
+every time. The model — a code branch paired with a matching Lakebase data
+branch — is adopted from the Databricks
+[**lakebase-app-dev-kit**](https://github.com/databricks-solutions/lakebase-app-dev-kit).
+We implement a lightweight, dependency-free version of it here; graduate to the
+full kit (Alembic/Flyway runners, schema diffing, rollback snapshots, and the
+MCP skills that drive it from coding agents) when the team needs it.
+
+**Feature flow (push a `feature/**` branch):**
+
+1. `ci.yml` runs the cheap gate — ruff, SPA build, migration + bundle validation.
+2. `feature-deploy.yml`:
+   - forks a **paired Lakebase branch** off `production`
+     (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data.
+     A fork **auto-inherits** an RW endpoint (named `primary`, like the parent)
+     and the parent's **roles/grants**, so the app SP CONNECT + reader-group
+     SELECT carry over with no extra grant step. (The script discovers the
+     inherited endpoint rather than creating one; branches carry a 7-day TTL as a
+     cleanup safety net.);
+   - deploys the app to `dev` pointed at that branch via
+     `--var app_connect_branch=<id> --var app_connect_endpoint=<id>`
+     (dev-mode also per-identity-prefixes the app, so the instance is isolated);
+   - **smoke-tests** the app's `/api/health`.
+3. On PR close, `feature-teardown.yml` deletes the paired branch + endpoint.
+
+**Release flow (merge to `main`):** `promote.yml` deploys to `tst` automatically;
+promotion to `prod` is a **gated, human-approved** dispatch. The prod app is
+always sourced from `main` — never a feature branch.
+
+**Best practices for a code/flow update:**
+
+- **Schema change → a new migration file.** Add `app/migrations/versions/NNNN__*.sql`
+  (forward-only, immutable once merged). Never edit an applied migration; never
+  hand-run DDL against the shared branch. The runner applies pending files at
+  app startup and CI validates them.
+- **Domain/KPI change → `cyber360.yaml` only** (see §1). The paired feature app
+  renders it against the forked data before you promote.
+- **Bundle/infra change → keep the default (production) path byte-identical.**
+  The `app_connect_*` vars default to `production/primary`; feature isolation is
+  purely an override, so a plain deploy is unaffected.
+- **Verify on the paired app, not prod.** The feature app connects to the fork,
+  so you test schema + UI against a real snapshot of prod data safely.
+
+**Required CI settings** (repo/environment): OAuth M2M via a service principal —
+secret `DATABRICKS_CLIENT_SECRET`; variables `DATABRICKS_HOST`,
+`DATABRICKS_CLIENT_ID`, `CYBER360_CATALOG`, `CYBER360_WAREHOUSE_ID`,
+`CYBER360_OWNER_ROLE`, `CYBER360_LAKEBASE_PROJECT`. Gate `prod` with a protected
+GitHub environment + required reviewers. (No PATs.)
+
 ---
 
 ## 6. Anti-Patterns (do NOT do these)

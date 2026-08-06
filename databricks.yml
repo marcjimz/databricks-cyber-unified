@@ -51,6 +51,20 @@ variables:
   lakebase_endpoint:
     description: "Lakebase endpoint id -- the project's auto-created primary read-write endpoint"
     default: "primary"
+  # ── App connection target (branch/endpoint the APP connects to) ──
+  # These default to the managed production branch/endpoint above, so the normal
+  # path is unchanged. For an ISOLATED FEATURE deploy, a paired Lakebase branch is
+  # forked from production out-of-band (see .github/scripts/lakebase_branch.py),
+  # then the app is deployed with `--var app_connect_branch=<feature-branch-id>
+  # --var app_connect_endpoint=<feature-endpoint-id>` so it connects to the forked
+  # branch's own data + endpoint. The managed postgres_* resources still manage
+  # production only; these vars ONLY steer the app's connection target + binding.
+  app_connect_branch:
+    description: "Lakebase branch id the APP connects to (defaults to the production branch)."
+    default: "production"
+  app_connect_endpoint:
+    description: "Lakebase endpoint id the APP connects to (defaults to the primary endpoint)."
+    default: "primary"
   lakebase_min_cu:
     description: "Lakebase endpoint autoscaling floor in Compute Units (min 0.5)"
     default: 0.5
@@ -87,6 +101,13 @@ variables:
   genie_vulnerability_embed_url:
     description: "Genie Space embed URL for the Vulnerability Management domain drawer"
     default: ""
+  pipeline_development:
+    description: >-
+      Whether the Lakeflow pipeline runs in development mode (reuses compute,
+      relaxed retries -- fast iteration). MUST be false for a `mode: production`
+      target, which rejects a development pipeline. Defaults true for dev/tst and
+      is overridden to false in the prod target below.
+    default: true
 
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
@@ -190,7 +211,7 @@ resources:
       serverless: true
       channel: PREVIEW
       continuous: false
-      development: true
+      development: ${var.pipeline_development}
       configuration:
         cyber360.catalog: ${var.catalog}
         cyber360.schema: ${resources.schemas.cyber360_schema.name}
@@ -346,6 +367,15 @@ resources:
       resources:
         - name: "lakebase"
           postgres:
+            # Binding stays on the PRODUCTION branch even for a feature deploy that
+            # points the app at a FORK (app_connect_branch): a Lakebase fork
+            # inherits the parent branch's roles + grants, so the SP's branch-level
+            # CAN_CONNECT_AND_CREATE granted here carries to every fork. VERIFIED
+            # end-to-end -- a fork off production exposed the identical SP role,
+            # reader-group role, USAGE + SELECT grants, and synced KPI data. So the
+            # env var (LAKEBASE_ENDPOINT_NAME) steers the connection target while
+            # this binding (the grant) lives on the parent and is inherited. (The
+            # fork is not a DAB-managed resource, so it cannot be referenced here.)
             branch: ${resources.postgres_branches.cyber360_production.name}
             # Full database path (projects/<id>/branches/<id>/databases/<id>); the
             # API rejects a bare logical name here.
@@ -401,8 +431,13 @@ resources:
           # PGHOST via postgres.get_endpoint(name=...). Composed from the same
           # DAB vars that define the project/branch/endpoint resources, so it is
           # never hardcoded and always tracks the deployed topology.
+          # Uses app_connect_branch/endpoint (default = production/primary) so a
+          # feature deploy can point the app at a forked Lakebase branch without
+          # touching the managed production resources. A branch fork inherits the
+          # parent's roles/grants, so the app SP's CONNECT + the reader group's
+          # SELECT carry to the fork.
           - name: LAKEBASE_ENDPOINT_NAME
-            value: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/endpoints/${var.lakebase_endpoint}
+            value: projects/${var.lakebase_project}/branches/${var.app_connect_branch}/endpoints/${var.app_connect_endpoint}
           - name: LAKEBASE_DATABASE_NAME
             value: ${var.lakebase_database}
           # Databricks GROUP role the KPI read path connects as. The app SP is a
@@ -436,12 +471,25 @@ resources:
 # DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
+  # Dev: per-developer sandbox. `mode: development` prefixes resource names with
+  # the deploying user, so many feature branches can coexist in one workspace
+  # (see the feature-development flow in the operationalization guide).
   dev:
     default: true
     mode: development
 
+  # Test / staging: a shared integration environment that mirrors prod topology
+  # but still runs the pipeline in development mode for fast rebuilds. Promote
+  # here from dev before prod.
+  tst:
+    mode: development
+
+  # Prod: the released application, sourced from `main`. The pipeline must NOT be
+  # in development mode here (mode: production rejects it), so pin the flag false.
   prod:
     mode: production
+    variables:
+      pipeline_development: false
     resources:
       apps:
         cyber360_app:

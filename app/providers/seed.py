@@ -6,7 +6,6 @@ Uses the same mulberry32 PRNG seeds to produce identical data distributions.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -46,7 +45,10 @@ NOW = int(datetime(2026, 6, 23, 18, 0, 0, tzinfo=timezone.utc).timestamp() * 100
 DAY = 86_400_000
 WINDOW_DAYS = 30
 
-ORG_UNITS = ["Acute Care", "Ambulatory", "Medical Group", "Pharmacy", "Revenue Cycle", "Corporate IT", "Research", "Supply Chain"]
+ORG_UNITS = [
+    "Acute Care", "Ambulatory", "Medical Group", "Pharmacy",
+    "Revenue Cycle", "Corporate IT", "Research", "Supply Chain",
+]
 AUTH_PROTOCOLS = ["SAML", "OIDC", "Kerberos", "LDAP"]
 MFA_FACTORS = ["FIDO2", "Push", "TOTP", "SMS"]
 SERVICES = ["Epic", "Workday", "ServiceNow", "Microsoft 365", "Citrix", "Cerner", "VPN"]
@@ -371,14 +373,16 @@ def get_vulnerability_seed() -> VulnerabilitySeed:
 # Incident seed data
 # ---------------------------------------------------------------------------
 
+# A dense demo data-table -- one incident per line is the readable form, so the
+# long-line rule is waived here rather than wrapping each constructor.
 INCIDENTS = [
-    IncidentRecord(uid="inc-1", priority="P1", label="Critical", domain="vulnerability", status="investigating", mttr_hours=4.2, opened_time=int(datetime(2026, 6, 23, 13, 45, tzinfo=timezone.utc).timestamp() * 1000), title="Exploited KEV on perimeter VPN appliance"),
-    IncidentRecord(uid="inc-2", priority="P2", label="High", domain="identity", status="investigating", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 23, 8, 10, tzinfo=timezone.utc).timestamp() * 1000), title="Suspicious privileged login from new geo"),
-    IncidentRecord(uid="inc-3", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 22, 30, tzinfo=timezone.utc).timestamp() * 1000), title="Unpatched critical CVE on Epic interface server"),
-    IncidentRecord(uid="inc-4", priority="P2", label="High", domain="identity", status="contained", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 16, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Orphaned admin account reactivated"),
-    IncidentRecord(uid="inc-5", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 9, 20, tzinfo=timezone.utc).timestamp() * 1000), title="Scan gap on clinical network segment"),
-    IncidentRecord(uid="inc-6", priority="P3", label="Medium", domain="identity", status="open", mttr_hours=18.4, opened_time=int(datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc).timestamp() * 1000), title="MFA fatigue attempts against caregiver accounts"),
-    IncidentRecord(uid="inc-7", priority="P4", label="Low", domain="vulnerability", status="open", mttr_hours=3.2, opened_time=int(datetime(2026, 6, 20, 6, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Low-sev TLS configuration finding"),
+    IncidentRecord(uid="inc-1", priority="P1", label="Critical", domain="vulnerability", status="investigating", mttr_hours=4.2, opened_time=int(datetime(2026, 6, 23, 13, 45, tzinfo=timezone.utc).timestamp() * 1000), title="Exploited KEV on perimeter VPN appliance"),  # noqa: E501
+    IncidentRecord(uid="inc-2", priority="P2", label="High", domain="identity", status="investigating", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 23, 8, 10, tzinfo=timezone.utc).timestamp() * 1000), title="Suspicious privileged login from new geo"),  # noqa: E501
+    IncidentRecord(uid="inc-3", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 22, 30, tzinfo=timezone.utc).timestamp() * 1000), title="Unpatched critical CVE on Epic interface server"),  # noqa: E501
+    IncidentRecord(uid="inc-4", priority="P2", label="High", domain="identity", status="contained", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 16, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Orphaned admin account reactivated"),  # noqa: E501
+    IncidentRecord(uid="inc-5", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 9, 20, tzinfo=timezone.utc).timestamp() * 1000), title="Scan gap on clinical network segment"),  # noqa: E501
+    IncidentRecord(uid="inc-6", priority="P3", label="Medium", domain="identity", status="open", mttr_hours=18.4, opened_time=int(datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc).timestamp() * 1000), title="MFA fatigue attempts against caregiver accounts"),  # noqa: E501
+    IncidentRecord(uid="inc-7", priority="P4", label="Low", domain="vulnerability", status="open", mttr_hours=3.2, opened_time=int(datetime(2026, 6, 20, 6, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Low-sev TLS configuration finding"),  # noqa: E501
 ]
 
 INCIDENT_OPEN_COUNTS = IncidentSeverityCounts(P1=1, P2=4, P3=17, P4=43)
@@ -483,7 +487,9 @@ class SeedProvider:
 
     def _compute_vulnerability(self) -> dict[str, Any]:
         seed = get_vulnerability_seed()
-        is_open = lambda s: s in (1, 2)
+
+        def is_open(s: int) -> bool:
+            return s in (1, 2)
 
         critical_open = sum(1 for f in seed.findings if f.severity_id == 5 and is_open(f.status_id))
         high_open = sum(1 for f in seed.findings if f.severity_id == 4 and is_open(f.status_id))
