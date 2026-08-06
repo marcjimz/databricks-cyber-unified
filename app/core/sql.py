@@ -44,7 +44,15 @@ class SQLClient:
         host = os.environ.get("DATABRICKS_HOST", "")
 
         if token:
-            ws = WorkspaceClient(host=host, token=token)
+            # OBO: authenticate AS THE USER with their forwarded token. The app
+            # runtime also carries the SP's OAuth env (DATABRICKS_CLIENT_ID/SECRET),
+            # so a bare WorkspaceClient(token=...) trips the SDK's "more than one
+            # authorization method configured: oauth and pat" guard. Pin an explicit
+            # PAT-auth Config so ONLY the user token is used (ignores ambient OAuth).
+            from databricks.sdk.core import Config
+
+            cfg = Config(host=host, token=token, auth_type="pat")
+            ws = WorkspaceClient(config=cfg)
         else:
             ws = WorkspaceClient()
 

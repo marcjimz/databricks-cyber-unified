@@ -262,6 +262,17 @@ resources:
       description: "Cyber360 Unified Cybersecurity Posture Dashboard"
       source_code_path: ./app
 
+      # User authorization (on-behalf-of-user). Declaring `user_api_scopes` makes
+      # Databricks forward the signed-in user's access token to the app in the
+      # `X-Forwarded-Access-Token` header, which the OBOMiddleware reads. KPI reads
+      # then run the SQL-warehouse metric-view queries AS THE USER (per-user UC
+      # permissions enforced), not as the app SP -- so no SP grant on the metric
+      # views is needed. `sql` is the scope for the Statement Execution API /
+      # warehouse + UC data reads. On first visit each user consents once.
+      # (Declarative here so it deploys identically to any workspace.)
+      user_api_scopes:
+        - sql
+
       # Bind the Lakebase autoscaling branch as an app resource. This grants the
       # app SERVICE PRINCIPAL CAN_CONNECT_AND_CREATE on the branch, which the app
       # uses ONLY for its own read-write state schema (preferences/chats/sessions).
