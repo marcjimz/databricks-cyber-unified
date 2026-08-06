@@ -38,4 +38,33 @@ measures:
     expr: COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY) / COUNT(*) * 100
   - name: dormant_admin_accounts
     expr: COUNT_IF(is_privileged AND last_activity < now() - INTERVAL 90 DAY)
+# Materialization accelerates the app's KPI reads (aggregate-aware query
+# rewriting): the app queries this view natively with MEASURE(); the optimizer
+# transparently serves precomputed results. The `day`-grained aggregated MV
+# covers the 30/60/90-day window rollups the app filters on; the unaggregated
+# baseline is the fallback for any query the aggregate can't satisfy. Refreshed
+# by a managed Lakeflow pipeline. NOTE: keep this view free of per-user access
+# controls / invoker-dependent exprs (current_user/is_member) -- materialization
+# precomputes as the owner and is disabled for views that carry them.
+materialization:
+  schedule: every 6 hours
+  mode: relaxed
+  materialized_views:
+    - name: by_day
+      type: aggregated
+      dimensions:
+        - day
+      measures:
+        - mfa_adoption
+        - privileged_accounts
+        - orphaned_accounts
+        - sso_integration
+        - pam_vault_coverage
+        - avg_provisioning
+        - access_recertification
+        - dormant_admin_accounts
+      partition_by:
+        - day
+    - name: baseline
+      type: unaggregated
 $$;

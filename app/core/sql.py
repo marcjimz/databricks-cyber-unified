@@ -1,14 +1,9 @@
-"""SQL Warehouse client for the INTERACTIVE Genie drawer ONLY.
+"""SQL Warehouse client (Statement Execution API).
 
-This client is NOT on the KPI read path. KPI tiles, health cards and trend
-series are served exclusively from the synced Lakebase aggregates via
-``providers.lakebase.LakebaseProvider`` (see ``core.db.lakebase_connection``).
-
-The SQL Warehouse is reserved for the interactive Genie/ad-hoc drill-down
-experience, where a user runs free-form questions against the governed
-Metric Views. It uses the Statement Execution API with per-request OBO
-tokens so all interactive data access still respects Unity Catalog
-permissions.
+Used for KPI reads -- ``providers.metricview.MetricViewProvider`` queries the UC
+metric views natively through this client -- and for the interactive Genie /
+ad-hoc drill-down experience. Statements run with per-request OBO tokens, so all
+data access respects Unity Catalog permissions per user.
 """
 
 from __future__ import annotations
