@@ -23,19 +23,19 @@ dimensions:
     expr: status
 measures:
   - name: mfa_adoption
-    expr: SUM(IF(is_mfa, 1, 0)) / COUNT(*) * 100
+    expr: try_divide(SUM(IF(is_mfa, 1, 0)), COUNT(*)) * 100
   - name: privileged_accounts
     expr: COUNT_IF(is_privileged = true)
   - name: orphaned_accounts
     expr: COUNT_IF(owner_active = false AND status <> 'disabled')
   - name: sso_integration
-    expr: SUM(IF(via_sso, 1, 0)) / COUNT(*) * 100
+    expr: try_divide(SUM(IF(via_sso, 1, 0)), COUNT(*)) * 100
   - name: pam_vault_coverage
-    expr: COUNT_IF(is_privileged AND in_pam_vault) / COUNT_IF(is_privileged) * 100
+    expr: try_divide(COUNT_IF(is_privileged AND in_pam_vault), COUNT_IF(is_privileged)) * 100
   - name: avg_provisioning
     expr: AVG(provisioning_hours) / 24
   - name: access_recertification
-    expr: COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY) / COUNT(*) * 100
+    expr: try_divide(COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY), COUNT(*)) * 100
   - name: dormant_admin_accounts
     expr: COUNT_IF(is_privileged AND last_activity < now() - INTERVAL 90 DAY)
 # Materialization accelerates the app's KPI reads (aggregate-aware query
