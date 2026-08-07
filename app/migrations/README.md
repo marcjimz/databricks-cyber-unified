@@ -4,9 +4,8 @@ Versioned, forward-only SQL migrations for the app-owned **state** schema in
 Lakebase (`preferences`, `chats`, `sessions`, and anything you add later).
 
 > **Scope.** These migrations manage ONLY the schema the app *owns* and writes
-> to. They never touch the read-only **synced KPI aggregates** (`agg_daily_synced`
-> / `agg_rollup_synced`) — those are produced by the reverse-ETL pipeline and are
-> read-only to the app.
+> to (its state tables). KPI data is not in Lakebase at all — it's served by
+> querying the UC metric views natively on the SQL Warehouse.
 
 ## How it works
 

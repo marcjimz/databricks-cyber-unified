@@ -62,12 +62,6 @@ class DataSourceConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class LakebaseSyncedTablesConfig(BaseModel):
-    """Names of the read-only aggregate tables produced by the reverse-ETL sync."""
-    daily: str = "agg_daily_synced"
-    rollup: str = "agg_rollup_synced"
-
-
 class LakebaseStateTablesConfig(BaseModel):
     """Names of the app-owned read-write state tables."""
     preferences: str = "cyber360_preferences"
@@ -88,16 +82,10 @@ class LakebaseConfig(BaseModel):
     # external grant required. Kept separate from the read-only synced-aggregate
     # schema (data_source.schema), which the SP only has SELECT on.
     app_schema: str = "cyber360_app"
-    # Postgres role the KPI READ path connects as. This is the name of a
-    # Databricks *group* that has been registered as a Postgres group role (via
-    # the databricks_auth extension) and granted USAGE + SELECT on the synced
-    # aggregate schema. The app SP is a member of that group, so it connects
-    # with PGUSER = this role name and its own OAuth token, and the session runs
-    # AS the group role -- inheriting the group's read grants without any
-    # per-SP object grant. When empty, the read path falls back to connecting as
-    # the SP's own Postgres role (requires a direct per-SP grant instead).
-    reader_role: str = ""
-    synced_tables: LakebaseSyncedTablesConfig = LakebaseSyncedTablesConfig()
+    # Lakebase now serves ONLY app-owned read-write state (preferences/chats/
+    # sessions). KPI reads moved to native UC metric-view queries on the SQL
+    # Warehouse (see providers/metricview.py), so the read-only synced-aggregate
+    # tables + reader group role are gone.
     state_tables: LakebaseStateTablesConfig = LakebaseStateTablesConfig()
 
 
@@ -129,7 +117,10 @@ class DimensionConfig(BaseModel):
 class MeasureConfig(BaseModel):
     name: str
     label: str
-    expression: str
+    # The measure MATH now lives in the UC metric view (mv_*.sql) as the single
+    # semantic source of truth; the app queries MEASURE(name) and never re-derives
+    # it. `expression` is optional here, retained only for display lineage.
+    expression: str | None = None
     comment: str = ""
     format: MeasureFormat = MeasureFormat.count
     percent_digits: int = 0
@@ -308,7 +299,7 @@ def build_change(measure: MeasureConfig, raw: float, period: int) -> dict[str, s
 def _format_change(measure: MeasureConfig, magnitude: float) -> dict[str, str]:
     """Format a numeric period delta into the KpiChange contract shape.
 
-    Shared by the seed (synthesized) and Lakebase (real agg_rollup) paths so the
+    Shared by the seed (synthesized) and metric-view (real windowed) paths so the
     label/arrow/tone semantics stay identical regardless of data source.
     """
     arrow = (

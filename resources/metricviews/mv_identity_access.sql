@@ -23,19 +23,48 @@ dimensions:
     expr: status
 measures:
   - name: mfa_adoption
-    expr: SUM(IF(is_mfa, 1, 0)) / COUNT(*) * 100
+    expr: try_divide(SUM(IF(is_mfa, 1, 0)), COUNT(*)) * 100
   - name: privileged_accounts
     expr: COUNT_IF(is_privileged = true)
   - name: orphaned_accounts
     expr: COUNT_IF(owner_active = false AND status <> 'disabled')
   - name: sso_integration
-    expr: SUM(IF(via_sso, 1, 0)) / COUNT(*) * 100
+    expr: try_divide(SUM(IF(via_sso, 1, 0)), COUNT(*)) * 100
   - name: pam_vault_coverage
-    expr: COUNT_IF(is_privileged AND in_pam_vault) / COUNT_IF(is_privileged) * 100
+    expr: try_divide(COUNT_IF(is_privileged AND in_pam_vault), COUNT_IF(is_privileged)) * 100
   - name: avg_provisioning
     expr: AVG(provisioning_hours) / 24
   - name: access_recertification
-    expr: COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY) / COUNT(*) * 100
+    expr: try_divide(COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY), COUNT(*)) * 100
   - name: dormant_admin_accounts
     expr: COUNT_IF(is_privileged AND last_activity < now() - INTERVAL 90 DAY)
+# Materialization accelerates the app's KPI reads (aggregate-aware query
+# rewriting): the app queries this view natively with MEASURE(); the optimizer
+# transparently serves precomputed results. The `day`-grained aggregated MV
+# covers the 30/60/90-day window rollups the app filters on; the unaggregated
+# baseline is the fallback for any query the aggregate can't satisfy. Refreshed
+# by a managed Lakeflow pipeline. NOTE: keep this view free of per-user access
+# controls / invoker-dependent exprs (current_user/is_member) -- materialization
+# precomputes as the owner and is disabled for views that carry them.
+materialization:
+  schedule: every 6 hours
+  mode: relaxed
+  materialized_views:
+    - name: by_day
+      type: aggregated
+      dimensions:
+        - day
+      measures:
+        - mfa_adoption
+        - privileged_accounts
+        - orphaned_accounts
+        - sso_integration
+        - pam_vault_coverage
+        - avg_provisioning
+        - access_recertification
+        - dormant_admin_accounts
+      partition_by:
+        - day
+    - name: baseline
+      type: unaggregated
 $$;
