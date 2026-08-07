@@ -286,6 +286,22 @@ secret `DATABRICKS_CLIENT_SECRET`; variables `DATABRICKS_HOST`,
 `CYBER360_OWNER_ROLE`, `CYBER360_LAKEBASE_PROJECT`. Gate `prod` with a protected
 GitHub environment + required reviewers. (No PATs.)
 
+### 5b. Access control — group-driven, declarative
+
+Manage the **group**, not users. Two bring-your-own Databricks groups (bundle
+variables `manage_group` / `user_group`, default `DPG_CYBER360_MANAGE` /
+`DPG_CYBER360_USER`) propagate declaratively:
+- A **top-level `permissions:`** block fans out to the app + data-plane job +
+  pipeline: manage_group `CAN_MANAGE`, user_group `CAN_VIEW`. The app adds
+  user_group `CAN_USE` (a level the top-level block can't express).
+- Groups are **bring-your-own** (DABs can't create groups) and must be
+  **workspace** groups for these permissions.
+- **UC data grants are NOT in the bundle**: UC grant principals must be
+  **account** groups, so granting the groups USE_CATALOG/USE_SCHEMA/SELECT on the
+  catalog+schema (so user_group can query the metric views) is a one-time
+  metastore-admin step — see README "Access control". Do NOT add `grants:` blocks
+  referencing workspace groups; the deploy fails ("Could not find principal").
+
 ---
 
 ## 6. Anti-Patterns (do NOT do these)

@@ -172,6 +172,51 @@ databricks bundle deploy -t dev --var load_synthetic_data=false
 
 ---
 
+## Access control (manage the group, not users)
+
+Access is driven by **two bring-your-own Databricks groups** so you manage
+**group membership only** — never per-user permissions. Add someone to a group
+and their access to every Cyber360 resource follows; remove them and it's gone.
+
+| Group (variable) | Default name | Gets |
+|---|---|---|
+| `manage_group` | `DPG_CYBER360_MANAGE` | **CAN_MANAGE** on the app, data-plane job, and pipeline |
+| `user_group` | `DPG_CYBER360_USER` | **CAN_USE** on the app; **CAN_VIEW** on the job + pipeline |
+
+These are **workspace** permissions and are fully **declarative in the bundle** —
+a top-level `permissions:` block propagates to the app/job/pipeline, and the app
+adds the `CAN_USE` level for `user_group`. Deploying to another workspace applies
+the identical model. Override the names per deploy if your groups differ:
+
+```bash
+databricks bundle deploy -t dev \
+  --var manage_group=MY_ADMINS --var user_group=MY_USERS
+```
+
+**Prerequisites (bring-your-own):**
+1. The two groups must **already exist** — Databricks Asset Bundles cannot create
+   groups. Create them once (workspace admin) and manage their membership going
+   forward.
+2. **Data-layer (Unity Catalog) grants are a separate, one-time step** and are
+   **not** managed by this bundle. Workspace-object permissions (above) accept
+   workspace groups, but UC grant principals must be **account-level groups**, so
+   the KPI data grants are left to your team's metastore admin. To let
+   `user_group` members query the metric views (reads run per-user, so each user
+   needs UC access), grant — once, e.g. via a SQL editor or `databricks grants`:
+
+   ```sql
+   GRANT USE CATALOG   ON CATALOG <catalog>              TO `DPG_CYBER360_USER`;
+   GRANT USE SCHEMA    ON SCHEMA  <catalog>.<schema>     TO `DPG_CYBER360_USER`;
+   GRANT SELECT        ON SCHEMA  <catalog>.<schema>     TO `DPG_CYBER360_USER`;
+   -- DPG_CYBER360_MANAGE typically gets ALL PRIVILEGES on the schema:
+   GRANT ALL PRIVILEGES ON SCHEMA <catalog>.<schema>     TO `DPG_CYBER360_MANAGE`;
+   ```
+
+   Without these grants the app opens for `user_group` members but KPI tiles
+   return an access error (the per-user OBO query is denied by Unity Catalog).
+
+---
+
 ## CI/CD & feature environments
 
 GitHub Actions (`.github/workflows/`) automate the flow. Once set up, you get an

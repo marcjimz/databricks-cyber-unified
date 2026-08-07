@@ -31,7 +31,47 @@
 bundle:
   name: cyber360-dashboard
 
+# ── Group-based access control (manage the GROUP, not individual users) ──
+# Two bring-your-own Databricks groups drive WORKSPACE access. Add/remove a user
+# from the group and their access to the Cyber360 app, data-plane job, and
+# pipeline follows -- there is no per-user permission anywhere. The names are
+# variables so the same bundle serves any workspace; the groups must PRE-EXIST
+# (DABs cannot create groups).
+#   manage_group -> app/job/pipeline CAN_MANAGE
+#   user_group   -> app CAN_USE, job/pipeline CAN_VIEW
+# This top-level `permissions:` block propagates to all three workspace resources
+# automatically; the app adds a CAN_USE grant for user_group (a level the
+# top-level block can't express).
+#
+# DATA-LAYER (Unity Catalog) grants are NOT managed here: UC grant principals
+# must be ACCOUNT-level groups (these are workspace groups), so granting the
+# groups USE_CATALOG / USE_SCHEMA / SELECT on the catalog+schema (so members can
+# query the metric views) is a one-time team/metastore-admin step. The exact
+# grants are documented in README.md "Access control".
+permissions:
+  # The deploying identity keeps CAN_MANAGE regardless of who runs the deploy.
+  - level: CAN_MANAGE
+    user_name: ${workspace.current_user.userName}
+  - level: CAN_MANAGE
+    group_name: ${var.manage_group}
+  - level: CAN_VIEW
+    group_name: ${var.user_group}
+
 variables:
+  manage_group:
+    description: >-
+      Databricks GROUP that manages Cyber360 workspace resources
+      (app/job/pipeline CAN_MANAGE). Bring-your-own: the group must already exist
+      (DABs cannot create groups). Data-layer (UC) grants are applied separately
+      -- see README "Access control".
+    default: "DPG_CYBER360_MANAGE"
+  user_group:
+    description: >-
+      Databricks GROUP with read/use access to Cyber360 workspace resources
+      (app CAN_USE, job/pipeline CAN_VIEW). To let members query the metric views,
+      grant this group USE_CATALOG + USE_SCHEMA + SELECT on the catalog/schema
+      out-of-band (see README "Access control"). Bring-your-own group.
+    default: "DPG_CYBER360_USER"
   catalog:
     description: "Unity Catalog catalog for Cyber360 gold data, metric views and aggregates"
     default: "cyber360"
@@ -178,6 +218,12 @@ resources:
       catalog_name: ${var.catalog}
       name: ${var.schema}
       comment: "Cyber360 OCSF-aligned cybersecurity posture data, metric views and KPI aggregates"
+      # NOTE: Unity Catalog grants (USE_CATALOG / USE_SCHEMA / SELECT for the
+      # user_group so members can query the metric views) are intentionally NOT
+      # managed by this bundle. UC grant principals must be ACCOUNT-level groups,
+      # whereas the app/job/pipeline permissions use the workspace groups above;
+      # granting the data layer is a one-time team/metastore-admin step. See the
+      # "Access control" section in README.md for the exact grants to apply.
 
   volumes:
     cyber360_data:
@@ -334,9 +380,13 @@ resources:
           #   - name: GENIE_VULNERABILITY_EMBED_URL
           #     value: ${var.genie_vulnerability_embed_url}
 
+      # The top-level `permissions:` block already gives the deployer +
+      # manage_group CAN_MANAGE. The app's consumer level is CAN_USE (open + run
+      # the app) -- a level the top-level block can't express -- so user_group is
+      # granted CAN_USE here (overrides its top-level CAN_VIEW for this resource).
       permissions:
-        - level: CAN_MANAGE
-          user_name: ${workspace.current_user.userName}
+        - level: CAN_USE
+          group_name: ${var.user_group}
 
 # NOTE on workspace host: `workspace.host` is an AUTHENTICATION field, which the
 # Databricks CLI resolves BEFORE variable substitution -- so it cannot be a
@@ -367,11 +417,6 @@ targets:
     mode: production
     variables:
       pipeline_development: false
-    resources:
-      apps:
-        cyber360_app:
-          permissions:
-            - level: CAN_MANAGE
-              user_name: ${workspace.current_user.userName}
-            - level: CAN_USE
-              group_name: "cyber360-users"
+    # Permissions are group-driven and identical across targets (top-level
+    # `permissions:` + the app/schema/volume blocks reference ${var.manage_group}
+    # / ${var.user_group}), so prod needs no permission override here.
