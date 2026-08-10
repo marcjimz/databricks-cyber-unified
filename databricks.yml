@@ -134,8 +134,8 @@ variables:
     description: >-
       Whether the Lakeflow pipeline runs in development mode (reuses compute,
       relaxed retries -- fast iteration). MUST be false for a `mode: production`
-      target, which rejects a development pipeline. Defaults true for dev/tst and
-      is overridden to false in the prod target below.
+      target, which rejects a development pipeline. Defaults true for dev and is
+      overridden to false in the prod target below.
     default: true
 
 workspace:
@@ -398,25 +398,21 @@ resources:
 # DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
-  # Dev: per-developer sandbox. `mode: development` prefixes resource names with
-  # the deploying user, so many feature branches can coexist in one workspace
-  # (see the feature-development flow in the operationalization guide).
+  # Dev: the working environment for building + testing the app.
   dev:
     default: true
-    mode: development
-
-  # Test / staging: a shared integration environment that mirrors prod topology
-  # but still runs the pipeline in development mode for fast rebuilds. Promote
-  # here from dev before prod.
-  tst:
     mode: development
 
   # Prod: the released application, sourced from `main`. The pipeline must NOT be
   # in development mode here (mode: production rejects it), so pin the flag false.
   prod:
     mode: production
+    # `mode: production` requires an explicit, non-user-scoped root_path so the
+    # deploy is a single shared copy (not prefixed per deploying user like dev).
+    workspace:
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
       pipeline_development: false
     # Permissions are group-driven and identical across targets (top-level
-    # `permissions:` + the app/schema/volume blocks reference ${var.manage_group}
-    # / ${var.user_group}), so prod needs no permission override here.
+    # `permissions:` + the app block reference ${var.manage_group} /
+    # ${var.user_group}), so prod needs no permission override here.

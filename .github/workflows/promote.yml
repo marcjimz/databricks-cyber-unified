@@ -1,29 +1,18 @@
 name: Promote
 
-# Release-style promotion. Merging to `main` is the release event: it deploys
-# the bundle to the tst target for integration verification. Promotion to prod
-# is a MANUAL, gated step (workflow_dispatch) so a human approves the prod
-# release -- the shared/prod app is always sourced from `main`.
+# Release to prod. Promotion is a MANUAL, gated step (workflow_dispatch) so a
+# human approves the release -- the prod app is always sourced from `main`.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      target:
-        description: "Target to promote to"
-        required: true
-        default: tst
-        type: choice
-        options: [tst, prod]
 
 jobs:
   promote:
-    name: Deploy ${{ github.event.inputs.target || 'tst' }}
+    name: Deploy prod
     runs-on: ubuntu-latest
-    # `prod` promotion runs against the protected 'prod' GitHub environment, so
-    # required reviewers gate it. push-to-main promotes to tst automatically.
-    environment: ${{ github.event.inputs.target || 'tst' }}
+    # Runs against the protected 'prod' GitHub environment, so required reviewers
+    # gate the release.
+    environment: prod
     steps:
       - uses: actions/checkout@v4
 
@@ -51,11 +40,6 @@ jobs:
             echo "::warning::Databricks OAuth credentials not configured -- skipping promotion deploy. Add the repo secret + variables to enable."
           fi
 
-      - name: Resolve target
-        if: steps.creds.outputs.configured == 'true'
-        id: t
-        run: echo "target=${{ github.event.inputs.target || 'tst' }}" >> "$GITHUB_OUTPUT"
-
       - name: Deploy bundle
         if: steps.creds.outputs.configured == 'true'
         env:
@@ -66,15 +50,14 @@ jobs:
           WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
           OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
         run: |
-          databricks bundle deploy -t "${{ steps.t.outputs.target }}" \
+          databricks bundle deploy -t prod \
             --var catalog="$CATALOG" \
             --var warehouse_id="$WAREHOUSE_ID" \
             --var lakebase_owner_role="$OWNER_ROLE"
 
-      # Migrations run automatically at app startup, but we run the data plane and
-      # reader-role grant here so a promoted environment is fully live. These are
-      # idempotent. Comment out if you prefer to gate them manually.
-      - name: Build data plane
+      # Build the data plane (gold + metric views w/ materialization) then start
+      # the app. Idempotent. State migrations run automatically at app startup.
+      - name: Build data plane + start app
         if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
@@ -84,21 +67,6 @@ jobs:
           WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
           OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
         run: |
-          databricks bundle run cyber360_data_plane -t "${{ steps.t.outputs.target }}" \
-            --var catalog="$CATALOG" --var warehouse_id="$WAREHOUSE_ID" --var lakebase_owner_role="$OWNER_ROLE"
-
-      - name: Re-deploy (bind synced tables) + grant reader role + start app
-        if: steps.creds.outputs.configured == 'true'
-        env:
-          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
-          DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          CATALOG: ${{ vars.CYBER360_CATALOG }}
-          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
-          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
-        run: |
-          T="${{ steps.t.outputs.target }}"
           VARS="--var catalog=$CATALOG --var warehouse_id=$WAREHOUSE_ID --var lakebase_owner_role=$OWNER_ROLE"
-          databricks bundle deploy -t "$T" $VARS
-          databricks bundle run cyber360_grant_reader_role -t "$T" $VARS
-          databricks bundle run cyber360_app -t "$T" $VARS
+          databricks bundle run cyber360_data_plane -t prod $VARS
+          databricks bundle run cyber360_app -t prod $VARS

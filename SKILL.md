@@ -248,23 +248,21 @@ MCP skills that drive it from coding agents) when the team needs it.
 **Feature flow (push a `feature/**` branch):**
 
 1. `ci.yml` runs the cheap gate — ruff, SPA build, migration + bundle validation.
-2. `feature-deploy.yml`:
-   - forks a **paired Lakebase branch** off `production`
-     (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data.
-     A fork **auto-inherits** an RW endpoint (named `primary`, like the parent)
-     and the parent's **roles/grants**, so the app SP CONNECT + reader-group
-     SELECT carry over with no extra grant step. (The script discovers the
-     inherited endpoint rather than creating one; branches carry a 7-day TTL as a
-     cleanup safety net.);
-   - deploys the app to `dev` pointed at that branch via
-     `--var app_connect_branch=<id> --var app_connect_endpoint=<id>`
-     (dev-mode also per-identity-prefixes the app, so the instance is isolated);
-   - **smoke-tests** the app's `/api/health`.
-3. On PR close, `feature-teardown.yml` deletes the paired branch + endpoint.
+2. `feature-deploy.yml` forks a **paired Lakebase branch** off `production`
+   (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data.
+   A fork **auto-inherits** an RW endpoint (named `primary`) and the parent's
+   roles/grants (branches carry a 7-day TTL as a cleanup safety net). It does
+   **NOT** deploy a per-branch app: Databricks Apps are a per-environment service
+   (compute + URL + per-user OAuth consent), not per-PR previews. Test the app
+   against the fork via `LAKEBASE_ENDPOINT_NAME` (local dev-loop or the shared
+   dev app). The valuable, cheap isolation is the Lakebase branch, not the app.
+3. On PR close, `feature-teardown.yml` deletes the paired branch (its RW endpoint
+   cascades).
 
-**Release flow (merge to `main`):** `promote.yml` deploys to `tst` automatically;
-promotion to `prod` is a **gated, human-approved** dispatch. The prod app is
-always sourced from `main` — never a feature branch.
+**Release flow:** promotion to `prod` is a **manual, gated** `workflow_dispatch`
+(`promote.yml`) against the protected `prod` environment. The prod app is always
+sourced from `main` — never a feature branch. (There is no `tst` tier: just
+`dev` + `prod`.)
 
 **Best practices for a code/flow update:**
 
@@ -272,8 +270,8 @@ always sourced from `main` — never a feature branch.
   (forward-only, immutable once merged). Never edit an applied migration; never
   hand-run DDL against the shared branch. The runner applies pending files at
   app startup and CI validates them.
-- **Domain/KPI change → `cyber360.yaml` only** (see §1). The paired feature app
-  renders it against the forked data before you promote.
+- **Domain/KPI change → `cyber360.yaml` only** (see §1). Render it against the
+  forked data (dev-loop or shared dev app pointed at the branch) before you promote.
 - **Bundle/infra change → keep the default (production) path byte-identical.**
   The `app_connect_*` vars default to `production/primary`; feature isolation is
   purely an override, so a plain deploy is unaffected.

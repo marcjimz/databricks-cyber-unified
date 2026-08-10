@@ -146,20 +146,18 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
 > After a `git add app/frontend/dist` rebuild or any code change, **Pull** the Git
 > folder again before re-running `bundle deploy` so the workspace copy is current.
 
-### The `prod` target
+### Targets: `dev` and `prod`
 
-Everything above uses `-t dev`, which is the supported flow. The `prod` target
-exists as scaffolding but **fails `bundle validate -t prod`** with:
+The bundle defines two targets: **`dev`** (the working environment for building +
+testing) and **`prod`** (the released app, promoted via `promote.yml`). Both
+validate. Two prod-specific settings make `mode: production` happy:
+- the pipeline's `development` flag is a per-target variable
+  (`pipeline_development`, `true` for dev, pinned `false` for prod);
+- `prod` sets an explicit `workspace.root_path` (a single shared copy, not
+  per-user-prefixed like dev).
 
-```
-target with 'mode: production' cannot include a pipeline with 'development: true'
-```
-
-This is a Databricks guardrail, not a bug: a `mode: production` target refuses a
-pipeline flagged `development: true` (dev-mode pipelines reuse compute and relax
-retry semantics — not safe to ship as prod). The pipeline's `development` flag
-is a per-target variable (`pipeline_development`, `true` for dev/tst, pinned
-`false` for prod), so all three targets — `dev`, `tst`, `prod` — validate.
+> A `tst`/staging tier was intentionally dropped for now — one dev + prod keeps
+> the flow simple. Add a `tst` target later if a shared integration env is needed.
 
 **Bring-your-own-data.** The bundled synthetic data is a convenience, not a
 requirement. The `load_synthetic_data` variable (**default `true`**) gates the
@@ -261,18 +259,22 @@ with required reviewers, so promotion to prod needs human approval.
 1. **Branch off `main`** with a `feature/…` name and push it.
 2. **`ci.yml`** runs the gate (ruff, SPA build, migration + bundle validation).
 3. **`feature-deploy.yml`** forks a **paired Lakebase branch** off `production`
-   (own copy-on-write snapshot of prod data), deploys the app pointed at it, and
-   checks the app reaches **RUNNING/ACTIVE**.
-4. **Test it in Databricks:** open **Compute → Apps → `cyber360-dashboard`** and
-   click the URL. (You pass the app's OAuth front door as a logged-in user; a
-   `curl` with a token does *not* — that's why CI checks app *status*, not HTTP.)
-5. **Open a PR** → merge promotes to `tst`; a gated dispatch promotes to `prod`.
+   (its own copy-on-write snapshot of prod data + read-write endpoint). It does
+   **not** deploy a per-branch app — Databricks Apps are a per-environment
+   service, not per-PR previews (see below).
+4. **Test against the branch:** point the app at the fork via
+   `LAKEBASE_ENDPOINT_NAME` — run the app locally (dev-loop) or use the shared
+   **dev** app. The data is isolated; the app instance is shared.
+5. **Open a PR** → review + merge to `main`. Promotion to **prod** is a manual,
+   gated `workflow_dispatch` (`promote.yml`) against the protected `prod`
+   environment.
 6. **Close the PR** → `feature-teardown.yml` deletes the paired Lakebase branch.
 
-> The paired-branch flow (fork → deploy → grant inheritance) is verified
-> end-to-end. See `SKILL.md §5a` for the design and the
-> [lakebase-app-dev-kit](https://github.com/databricks-solutions/lakebase-app-dev-kit)
-> as the graduation path.
+> **Why no app-per-branch?** Each Databricks App is its own long-running compute
+> + URL + per-user OAuth consent — spinning one up per branch is high cost for
+> little gain, and Apps have no native per-PR preview primitive. The valuable,
+> cheap isolation is the **Lakebase branch** (copy-on-write, fork/drop in
+> seconds); the app stays a shared per-environment service (`dev`, then `prod`).
 
 ---
 

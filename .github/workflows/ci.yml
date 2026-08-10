@@ -75,14 +75,14 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Databricks OAuth credentials not configured (secret DATABRICKS_CLIENT_SECRET missing) -- skipping bundle validation. Add the repo secret + variables to enable."
           fi
-      - name: Validate dev + tst + prod targets
+      - name: Validate dev + prod targets
         if: steps.creds.outputs.configured == 'true'
         env:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
         run: |
-          for t in dev tst prod; do
+          for t in dev prod; do
             echo "== validate $t =="
             databricks bundle validate -t "$t"
           done
