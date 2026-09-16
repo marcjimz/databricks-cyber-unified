@@ -1,26 +1,88 @@
-.PHONY: help install install-backend install-frontend build build-frontend \
-       dev lint lint-backend lint-frontend clean \
-       generate-data \
-       validate deploy deploy-dev deploy-prod
+# Cyber360 — Databricks Asset Bundle deploy helpers.
+#
+# Mirrors the bluebird Makefile idiom: the env is a POSITIONAL word, e.g.
+#   make deploy sandbox    # validate -> deploy -> data-plane job -> run app, on databricks_sandbox
+#   make deploy edp_dev
+#   make deploy prod
+#
+# Individual steps (same positional env):
+#   make validate sandbox    # databricks bundle validate -t databricks_sandbox
+#   make data-plane sandbox  # run cyber360_data_plane (pipeline gold + phishing metric view)
+#   make app sandbox         # deploy + run the app (cyber360_app)
+#
+# `make deploy sandbox` = exactly:
+#   databricks bundle validate -t databricks_sandbox
+#   databricks bundle deploy   -t databricks_sandbox
+#   databricks bundle run      -t databricks_sandbox cyber360_data_plane
+#   databricks bundle run      -t databricks_sandbox cyber360_app
+#
+# `make setup <env>` = FIRST-TIME bootstrap for a NEW workspace/target: deploy
+# TWICE (a fresh deploy often needs a second pass — Lakebase provisions the
+# project/app asynchronously, so objects that depend on them settle on the 2nd
+# pass), then run the data-plane job + app.
+#
+# Env words are SHORT aliases mapped to the databricks.yml `targets:`
+#   sandbox -> databricks_sandbox   (FEVM, SYNTHETIC phishing data)
+#   edp_dev -> edp_dev              (Azure EDP DEV, REAL CyberArk source)
+#   prod    -> prod
+# (the full target names also work as the env word.)
 
 PYTHON   := python3
 NPM      := npm
-DAB      := databricks bundle
 APP_DIR  := app
 FE_DIR   := $(APP_DIR)/frontend
 FE_DIST  := $(FE_DIR)/dist
 
+# Full resource keys (a bare prefix like `cyber360_` fails with "resource not found").
+DATA_PLANE_JOB := cyber360_data_plane
+APP_KEY        := cyber360_app
+
+# Env words treated as a positional target (kept in sync with databricks.yml
+# `targets:`). Short aliases + the canonical names are both accepted.
+ENVS := sandbox edp_dev prod databricks_sandbox
+ENV  := $(filter $(ENVS),$(MAKECMDGOALS))
+
+# Map the short alias to the real databricks.yml target name.
+TARGET := $(ENV)
+ifeq ($(ENV),sandbox)
+  TARGET := databricks_sandbox
+endif
+
+# Optional CLI profile (avoids "multiple profiles matched" when several profiles
+# share a host). Defaults per target; override with `make deploy sandbox PROFILE=...`.
+# databricks_sandbox -> the real-time-mode FEVM profile.
+PROFILE ?=
+ifeq ($(TARGET),databricks_sandbox)
+  PROFILE := fe-vm-real-time-mode-demo
+endif
+PFLAG := $(if $(PROFILE),-p $(PROFILE),)
+
+.PHONY: help install install-backend install-frontend build build-frontend \
+        dev lint lint-backend lint-frontend clean generate-data \
+        guard-target setup deploy validate data-plane app $(ENVS)
+
 # ──────────────────────────────────────────────
-# Development
+# Development (local, no workspace)
 # ──────────────────────────────────────────────
 
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-24s\033[0m %s\n", $$1, $$2}'
+	@echo "Cyber360 — usage:"
+	@echo "  Local dev:"
+	@echo "    make install            install backend (.[dev], incl. duckdb) + frontend deps"
+	@echo "    make build              build the React SPA -> app/frontend/dist"
+	@echo "    make dev                run FastAPI locally with the seed provider (:8000)"
+	@echo "    make lint               ruff + tsc/eslint"
+	@echo "    make generate-data      (re)generate the bundled synthetic CSVs into data/"
+	@echo "  Deploy (positional env: sandbox | edp_dev | prod):"
+	@echo "    make deploy <env>       validate -> deploy -> data-plane job -> run app"
+	@echo "    make setup <env>        FIRST-TIME: deploy x2 -> data-plane -> app"
+	@echo "    make validate <env>     bundle validate only"
+	@echo "    make data-plane <env>   run $(DATA_PLANE_JOB) (gold + phishing metric view)"
+	@echo "    make app <env>          deploy + run the app ($(APP_KEY))"
 
 install: install-backend install-frontend ## Install all dependencies
 
-install-backend: ## Install Python dependencies
+install-backend: ## Install Python dependencies (incl. dev: duckdb seed engine)
 	cd $(APP_DIR) && pip install -e ".[dev]"
 
 install-frontend: ## Install Node dependencies
@@ -32,7 +94,7 @@ build-frontend: ## Build React SPA to dist/
 	cd $(FE_DIR) && $(NPM) run build
 
 dev: build ## Run FastAPI locally with built frontend (seed provider)
-	cd $(APP_DIR) && uvicorn main:app --reload --host 0.0.0.0 --port 8000
+	cd $(APP_DIR) && CYBER360_PROVIDER=seed uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 lint: lint-backend lint-frontend ## Lint everything
 
@@ -46,29 +108,54 @@ clean: ## Remove build artifacts
 	rm -rf $(FE_DIST) $(APP_DIR)/__pycache__ $(APP_DIR)/**/__pycache__
 	find $(APP_DIR) -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# ──────────────────────────────────────────────
-# Data Setup
-# ──────────────────────────────────────────────
-# NOTE: schema/tables/metric-views/aggregates are built by the config-driven
-# Lakeflow pipeline (pipelines/) on `bundle deploy` — there are no imperative
-# setup scripts. This target only (re)generates the bundled demo CSVs; the
-# pipeline generates the same gold in-code, so this is for local inspection only.
-
-generate-data: ## (Re)generate the bundled synthetic OCSF demo CSVs into data/
+# NOTE: schema/tables/metric-views are built by the config-driven Lakeflow
+# pipeline + data-plane job on deploy — there are no imperative setup scripts.
+# This only (re)generates the bundled synthetic CSVs (the pipeline generates the
+# same gold in-code), for local inspection.
+generate-data: ## (Re)generate the bundled synthetic phishing CSV into data/
 	$(PYTHON) setup/generate_csvs.py
 
 # ──────────────────────────────────────────────
-# DAB Deployment
+# DAB Deployment (positional env word)
 # ──────────────────────────────────────────────
 
-validate: ## Validate DAB configuration
-	$(DAB) validate
+# Fail clearly if no (or an unknown/ambiguous) env was given.
+guard-target:
+	@if [ -z "$(TARGET)" ]; then \
+	  echo "error: specify a target env, e.g. 'make deploy sandbox'"; \
+	  echo "       valid envs: $(ENVS)"; exit 2; fi
+	@if [ $(words $(ENV)) -gt 1 ]; then \
+	  echo "error: pick ONE env, got: $(ENV)"; exit 2; fi
 
-deploy: build validate ## Build and deploy to default target
-	$(DAB) deploy
+# Full deploy: validate -> deploy -> data-plane (gold + metric view) -> run app.
+deploy: guard-target build
+	databricks bundle validate -t $(TARGET) $(PFLAG)
+	databricks bundle deploy   -t $(TARGET) $(PFLAG)
+	databricks bundle run      -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
+	databricks bundle run      -t $(TARGET) $(PFLAG) $(APP_KEY)
 
-deploy-dev: build ## Build and deploy to dev target
-	$(DAB) deploy -t dev
+# FIRST-TIME bootstrap for a fresh workspace: deploy twice (the 1st pass creates
+# the Lakebase project/app; the 2nd settles resources that depend on them), then
+# run the data-plane job + app.
+setup: guard-target build
+	databricks bundle validate -t $(TARGET) $(PFLAG)
+	databricks bundle deploy   -t $(TARGET) $(PFLAG) || true   # 1st pass: expect partial on a fresh workspace
+	databricks bundle deploy   -t $(TARGET) $(PFLAG)           # 2nd pass: must succeed
+	databricks bundle run      -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
+	databricks bundle run      -t $(TARGET) $(PFLAG) $(APP_KEY)
+	@echo "setup complete for $(TARGET)."
 
-deploy-prod: build ## Build and deploy to production target
-	$(DAB) deploy -t prod
+validate: guard-target ## bundle validate only
+	databricks bundle validate -t $(TARGET) $(PFLAG)
+
+data-plane: guard-target ## run the data-plane job (pipeline gold + phishing metric view)
+	databricks bundle run -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
+
+app: guard-target ## deploy + (re)start the app
+	databricks bundle deploy -t $(TARGET) $(PFLAG)
+	databricks bundle run    -t $(TARGET) $(PFLAG) $(APP_KEY)
+
+# Env words are inert goals (consumed by ENV/TARGET above) so `make deploy sandbox`
+# doesn't try to build a target literally named `sandbox`.
+$(ENVS):
+	@:

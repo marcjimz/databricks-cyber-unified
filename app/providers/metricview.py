@@ -36,9 +36,9 @@ from core.config import (
     rollup_status,
 )
 from core.sql import SQLClient
-from models.common import Kpi, KpiChange, KpiLineage, Paginated, TrendInfo, TrendPoint
+from models.common import Kpi, KpiChange, KpiLineage, TrendInfo, TrendPoint
+from models.detail import DetailColumn, DetailQuery, DetailRowsResponse
 from models.domain import DomainMetricsResponse
-from models.identity import AccountRow, AccountsQuery
 from models.incidents import IncidentsResponse
 from models.scorecard import (
     ComplianceCounts,
@@ -47,8 +47,6 @@ from models.scorecard import (
     ScorecardOrg,
     ScorecardResponse,
 )
-from models.vulnerability import FindingRow, FindingsQuery
-from providers.seed import SeedProvider
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +66,6 @@ class MetricViewProvider:
         self._sql = SQLClient(warehouse_id=config.data_source.warehouse_id)
         self._catalog = config.data_source.catalog
         self._schema = config.data_source.schema_
-        # Demo drill-downs (accounts/findings/incidents) are row-level, not part
-        # of the metric-view semantic layer -> serve from the seed data.
-        self._seed = SeedProvider(config)
 
     # ── low-level query ──
 
@@ -281,16 +276,76 @@ class MetricViewProvider:
             series.append(TrendPoint(day=day, values=vals))
         return series
 
-    # ── drill-downs not in the metric-view semantic layer -> demo data ──
+    # ── generic, config-driven drill-down table ──
 
-    async def get_accounts(self, query: AccountsQuery) -> Paginated[AccountRow]:
-        return await self._seed.get_accounts(query)
+    async def get_detail_rows(
+        self, domain_key: str, query: DetailQuery
+    ) -> DetailRowsResponse:
+        """Return a page of the domain's drill-down table by SELECTing the
+        configured columns from its source_table (per-user OBO). Entirely
+        config-driven: columns, the filter's WHERE fragment, and the sort all
+        come from the domain's detail_table block."""
+        domain = self.config.get_domain(domain_key)
+        if not domain:
+            raise ValueError(f"Unknown domain: {domain_key}")
 
-    async def get_findings(self, query: FindingsQuery) -> Paginated[FindingRow]:
-        return await self._seed.get_findings(query)
+        table = domain.detail_table
+        if not table.columns:
+            # No table configured for this domain -> empty (not an error).
+            return DetailRowsResponse(columns=[], rows=[], total=0,
+                                      page=query.page, page_size=query.page_size)
+
+        columns = [DetailColumn(field=c.field, label=c.label or c.field, format=c.format)
+                   for c in table.columns]
+        col_list = ", ".join(f"`{c.field}`" for c in table.columns)
+        source = self._resolve_source(domain)
+        where = self._filter_where(table, query.filter_key)
+        where_sql = f" WHERE {where}" if where else ""
+        order_sql = f" ORDER BY {table.order_by}" if table.order_by else ""
+
+        page = max(query.page, 1)
+        page_size = query.page_size or table.page_size
+        offset = (page - 1) * page_size
+
+        count_sql = f"SELECT COUNT(*) AS n FROM {source}{where_sql}"
+        rows_sql = (
+            f"SELECT {col_list} FROM {source}{where_sql}{order_sql} "
+            f"LIMIT {page_size} OFFSET {offset}"
+        )
+        count_rows, data_rows = await asyncio.gather(
+            asyncio.to_thread(self._sql.execute, count_sql, token=self._token),
+            asyncio.to_thread(self._sql.execute, rows_sql, token=self._token),
+        )
+        total = int(_as_float(count_rows[0].get("n"))) if count_rows else 0
+        return DetailRowsResponse(
+            columns=columns,
+            rows=[{c.field: r.get(c.field) for c in table.columns} for r in data_rows],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
+    def _resolve_source(self, domain) -> str:
+        """The metric view's source table FQN. Config carries the fully-qualified
+        source_table (env placeholders already resolved at load)."""
+        return domain.metric_view.source_table
+
+    @staticmethod
+    def _filter_where(table, filter_key: str | None) -> str:
+        """Look up the TRUSTED where-fragment for the chosen filter key. Never
+        accepts free-form predicates -- only the config-defined ones."""
+        if not filter_key:
+            return ""
+        for f in table.filters:
+            if f.key == filter_key:
+                return f.where
+        return ""
 
     async def get_incidents(self) -> IncidentsResponse:
-        return await self._seed.get_incidents()
+        # Incidents are gated by features.soc_view_enabled and are not part of the
+        # metric-view semantic layer; return empty until a config-driven source
+        # is wired. (The SOC view is off by default.)
+        return IncidentsResponse.empty()
 
 
 def _as_float(value: Any) -> float:

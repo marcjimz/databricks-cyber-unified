@@ -44,6 +44,20 @@ async def get_dashboard_config(config: Cyber360Config = Depends(get_config)):
             "starters": d.genie.starters,
         }
 
+        detail_table = {
+            "label": d.detail_table.label,
+            "orderBy": d.detail_table.order_by,
+            "pageSize": d.detail_table.page_size,
+            "columns": [
+                {"field": c.field, "label": c.label or c.field, "format": c.format}
+                for c in d.detail_table.columns
+            ],
+            "filters": [
+                {"key": f.key, "label": f.label or f.key}
+                for f in d.detail_table.filters
+            ],
+        }
+
         domains.append({
             "key": d.key,
             "label": d.label,
@@ -60,6 +74,7 @@ async def get_dashboard_config(config: Cyber360Config = Depends(get_config)):
                 "comment": d.metric_view.comment,
                 "measures": measures,
             },
+            "detailTable": detail_table,
         })
 
     top_line_kpis = []

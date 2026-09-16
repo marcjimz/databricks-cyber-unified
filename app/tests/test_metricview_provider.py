@@ -53,14 +53,14 @@ def _provider(config, sql_client) -> MetricViewProvider:
 
 
 def test_measure_query_targets_metric_view_and_window(config):
-    fake = FakeSQLClient([("mv_identity_access", [{"mfa_adoption": 99.0}])])
+    fake = FakeSQLClient([("mv_phishing", [{"phishing_click_rate": 11.0}])])
     p = _provider(config, fake)
 
-    asyncio.run(p._measure_row("mv_identity_access", ["mfa_adoption"], p._window_where(30, prior=False)))
+    asyncio.run(p._measure_row("mv_phishing", ["phishing_click_rate"], p._window_where(30, prior=False)))
 
     q = fake.queries[-1]
-    assert "MEASURE(`mfa_adoption`)" in q
-    assert "cat.sch.mv_identity_access" in q
+    assert "MEASURE(`phishing_click_rate`)" in q
+    assert "cat.sch.mv_phishing" in q
     assert "current_date() - INTERVAL 30 DAY" in q
 
 
@@ -72,12 +72,12 @@ def test_prior_window_where_is_previous_period():
 
 
 def test_real_delta_when_prior_well_populated(config):
-    # current mfa 99, prior 90 -> real delta -9? no: 99-90 = +9. prior >= 0.5*99.
+    # report_rate goal is "higher": current 20, prior 15 -> +5 pts, prior >= 0.5*20.
     p = _provider(config, FakeSQLClient([]))
-    kpi = p._build_kpi("identity", "mfa_adoption", cur=99.0, prev=90.0, period=30)
-    assert kpi.raw == 99.0
+    kpi = p._build_kpi("phishing", "phishing_report_rate", cur=20.0, prev=15.0, period=30)
+    assert kpi.raw == 20.0
     assert kpi.change is not None
-    # +9 percentage points, goal higher -> positive tone, up arrow
+    # +5 percentage points, goal higher -> positive tone
     assert kpi.change.tone == "positive"
 
 
@@ -85,11 +85,34 @@ def test_sparse_prior_falls_back_to_synthesis(config):
     # prior is 0 (empty window) -> guard fails -> synthesized change (never None,
     # and deterministic), NOT a nonsensical full-value delta.
     p = _provider(config, FakeSQLClient([]))
-    kpi = p._build_kpi("identity", "mfa_adoption", cur=99.0, prev=0.0, period=30)
+    kpi = p._build_kpi("phishing", "phishing_report_rate", cur=20.0, prev=0.0, period=30)
     assert kpi.change is not None
-    # synthesized change is small relative to the value (not ~+99)
-    # label like "+1.2" / "-0.8"; just assert it parsed and isn't the raw value
-    assert "99" not in kpi.change.label
+    # synthesized change is small relative to the value (not ~+20)
+    assert "20" not in kpi.change.label
+
+
+def test_detail_rows_query_is_config_driven(config):
+    # The generic drill-down SELECTs the configured columns from source_table,
+    # applies the chosen filter's WHERE, and paginates -- all from config.
+    from models.detail import DetailQuery
+
+    fake = FakeSQLClient([
+        ("COUNT(*)", [{"n": 209}]),
+        ("SELECT `eventtimestamp`", [{"eventtimestamp": "2026-09-01T00:00:00.000Z",
+                                      "useremailaddress": "a@b.org",
+                                      "campaignname": "C", "eventtype": "Email Click",
+                                      "Region": "Desert", "templatesubject": "S"}]),
+    ])
+    p = _provider(config, fake)
+    resp = asyncio.run(p.get_detail_rows("phishing", DetailQuery(filter_key="clicked", page=1, page_size=5)))
+
+    assert resp.total == 209
+    assert [c.field for c in resp.columns] == [
+        "eventtimestamp", "useremailaddress", "campaignname", "eventtype", "Region", "templatesubject"]
+    # the configured filter's trusted WHERE fragment was applied
+    rows_q = next(q for q in fake.queries if q.startswith("SELECT `eventtimestamp`"))
+    assert "eventtype = 'Email Click'" in rows_q
+    assert "LIMIT 5 OFFSET 0" in rows_q
 
 
 def test_scorecard_builds_from_measure_rows(config):

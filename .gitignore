@@ -44,6 +44,10 @@ Thumbs.db
 # Session memory
 MEMORY.md
 
+# Agent tooling (machine-local)
+.claude/
+.isaac/
+
 # v0 reference (extracted zip)
 .v0-reference/
 

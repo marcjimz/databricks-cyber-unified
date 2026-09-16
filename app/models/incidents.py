@@ -33,6 +33,11 @@ class IncidentMttr(BaseModel):
 
 
 class IncidentsResponse(BaseModel):
-    active: list[IncidentRecord]
-    open_counts: IncidentSeverityCounts
-    mttr: IncidentMttr
+    active: list[IncidentRecord] = []
+    open_counts: IncidentSeverityCounts = IncidentSeverityCounts()
+    mttr: IncidentMttr = IncidentMttr()
+
+    @classmethod
+    def empty(cls) -> "IncidentsResponse":
+        """No incidents (SOC view off / no config-driven source wired)."""
+        return cls()

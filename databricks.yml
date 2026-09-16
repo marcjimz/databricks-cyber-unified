@@ -124,11 +124,17 @@ variables:
   load_synthetic_data:
     description: "Gate the pipeline's demo-data ingest stage. true = load bundled OCSF CSVs; false = build views/aggregates over the customer's existing gold tables (bring-your-own-data)."
     default: true
-  genie_identity_embed_url:
-    description: "Genie Space embed URL for the Identity & Access domain drawer"
-    default: ""
-  genie_vulnerability_embed_url:
-    description: "Genie Space embed URL for the Vulnerability Management domain drawer"
+  phishing_source_table:
+    description: >-
+      Table the phishing metric view READS. Defaults to the UNQUALIFIED
+      `phishing_detail`, which resolves to the synthetic sandbox gold table in
+      the view's own catalog/schema (the DDL runs after USE CATALOG/USE SCHEMA).
+      The edp_dev target overrides this to the fully-qualified real CyberArk
+      federated source (conn_cyberarch.dbo.phishing_detail). The metric view
+      itself always lives in ${var.catalog}.${var.schema}.
+    default: "phishing_detail"
+  genie_phishing_embed_url:
+    description: "Genie Space embed URL for the Phishing & Email Security domain drawer"
     default: ""
   pipeline_development:
     description: >-
@@ -278,24 +284,32 @@ resources:
         - task_key: build_gold
           pipeline_task:
             pipeline_id: ${resources.pipelines.cyber360_pipeline.id}
-        - task_key: metric_view_identity
+        # 1) phishing_source: a thin view over the per-target source table.
+        #    :source_table is what it READS -- synthetic gold in the sandbox, the
+        #    real CyberArk table in edp_dev (see targets). Split into its own step
+        #    (single CREATE) because the SQL-file task executor mis-parses a file
+        #    that mixes this CREATE with the metric view's $$-quoted body.
+        - task_key: phishing_source
           depends_on:
             - task_key: build_gold
           sql_task:
             warehouse_id: ${var.warehouse_id}
             file:
-              path: ${workspace.file_path}/resources/metricviews/mv_identity_access.sql
+              path: ${workspace.file_path}/resources/metricviews/phishing_source.sql
               source: WORKSPACE
             parameters:
               catalog: ${var.catalog}
               schema: ${resources.schemas.cyber360_schema.name}
-        - task_key: metric_view_vulnerability
+              source_table: ${var.phishing_source_table}
+        # 2) mv_phishing: the metric view (reads the stable phishing_source name).
+        #    :catalog/:schema are where the view itself LIVES.
+        - task_key: metric_view_phishing
           depends_on:
-            - task_key: build_gold
+            - task_key: phishing_source
           sql_task:
             warehouse_id: ${var.warehouse_id}
             file:
-              path: ${workspace.file_path}/resources/metricviews/mv_vulnerability_mgmt.sql
+              path: ${workspace.file_path}/resources/metricviews/mv_phishing.sql
               source: WORKSPACE
             parameters:
               catalog: ${var.catalog}
@@ -371,14 +385,12 @@ resources:
           - name: LAKEBASE_DATABASE_NAME
             value: ${var.lakebase_database}
           # GENIE_*_EMBED_URL are intentionally omitted while unset: the Apps API
-          # rejects an env var whose value resolves empty, and the genie_*_embed_url
-          # vars default to "". cyber360.yaml resolves the missing vars to "" (Genie
-          # drawer simply stays unconfigured). When you wire real Genie spaces, add
-          # them back here:
-          #   - name: GENIE_IDENTITY_EMBED_URL
-          #     value: ${var.genie_identity_embed_url}
-          #   - name: GENIE_VULNERABILITY_EMBED_URL
-          #     value: ${var.genie_vulnerability_embed_url}
+          # rejects an env var whose value resolves empty, and genie_phishing_embed_url
+          # defaults to "". cyber360.yaml resolves the missing var to "" (Genie
+          # drawer simply stays unconfigured). When you wire a real Genie space, add
+          # it back here:
+          #   - name: GENIE_PHISHING_EMBED_URL
+          #     value: ${var.genie_phishing_embed_url}
 
       # The top-level `permissions:` block already gives the deployer +
       # manage_group CAN_MANAGE. The app's consumer level is CAN_USE (open + run
@@ -398,10 +410,37 @@ resources:
 # DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
-  # Dev: the working environment for building + testing the app.
-  dev:
+  # ── databricks_sandbox: FEVM demo/dev box (SYNTHETIC data) ──
+  # The working environment for building + testing the app end-to-end. The
+  # pipeline generates the synthetic `phishing_detail` gold table
+  # (load_synthetic_data=true) and the metric view reads it (the unqualified
+  # phishing_source_table default resolves to the local gold). `workspace.host`
+  # is a literal per-target (it cannot be a ${var} -- it configures auth), which
+  # pins the deploy to the FEVM sandbox.
+  databricks_sandbox:
     default: true
     mode: development
+    workspace:
+      host: https://fevm-real-time-mode-demo.cloud.databricks.com
+    variables:
+      # This FEVM has no `cyber360` catalog; use its shared demo catalog (the
+      # bundle creates the `posture` schema inside it). Serverless Starter
+      # warehouse serves the metric-view KPI reads (auto-starts on query).
+      catalog: real_time_mode_demo_catalog
+      warehouse_id: "1916c91c970b63b5"
+
+  # ── edp_dev: EDP Azure DEV (REAL CyberArk source) ──
+  # Deploys the same app against the real, CyberArk-federated phishing table.
+  # No synthetic load -- the metric view reads conn_cyberarch.dbo.phishing_detail
+  # directly (bring-your-own-data). Same workspace bluebird's `dev` target uses.
+  edp_dev:
+    mode: development
+    workspace:
+      host: https://adb-5918574733311837.17.azuredatabricks.net
+    variables:
+      # Read the real federated source instead of a synthetic gold table.
+      load_synthetic_data: false
+      phishing_source_table: conn_cyberarch.dbo.phishing_detail
 
   # Prod: the released application, sourced from `main`. The pipeline must NOT be
   # in development mode here (mode: production rejects it), so pin the flag false.
