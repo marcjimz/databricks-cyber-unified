@@ -36,7 +36,6 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
-    TimestampType,
 )
 
 from lib.config import load_pipeline_config
@@ -64,38 +63,33 @@ _NOW_MS = default_now_ms()
 # ---------------------------------------------------------------------------
 
 _GOLD_SCHEMAS: dict[str, StructType] = {
-    "identity_access": StructType([
-        StructField("account_uid", StringType()),
-        StructField("account_name", StringType()),
-        StructField("time", TimestampType()),
-        StructField("actor_user_org_unit", StringType()),
-        StructField("auth_protocol", StringType()),
-        StructField("is_privileged", BooleanType()),
-        StructField("status", StringType()),
-        StructField("is_mfa", BooleanType()),
-        StructField("via_sso", BooleanType()),
-        StructField("owner_active", BooleanType()),
-        StructField("in_pam_vault", BooleanType()),
-        StructField("provisioning_hours", DoubleType()),
-        StructField("last_recertified", TimestampType()),
-        StructField("last_activity", TimestampType()),
-    ]),
-    "vulnerability_management": StructType([
-        StructField("finding_uid", StringType()),
-        StructField("first_seen", TimestampType()),
-        StructField("severity_id", IntegerType()),
-        StructField("status_id", IntegerType()),
-        StructField("cve_uid", StringType()),
-        StructField("cvss_score", DoubleType()),
-        StructField("cve_is_kev", BooleanType()),
-        StructField("device_hostname", StringType()),
-        StructField("device_type", StringType()),
-        StructField("device_region", StringType()),
-        StructField("resolved_time", TimestampType()),
-        StructField("is_fix_available", BooleanType()),
-        StructField("remediation_due", TimestampType()),
-        StructField("has_exception", BooleanType()),
-        StructField("last_scanned", TimestampType()),
+    # Schema-compatible with the real CyberArk `phishing_detail` federated table
+    # the edp_dev target reads. Timestamps are ISO-8601 strings (as the source
+    # emits); the metric view casts eventtimestamp -> DATE for the `day` dim.
+    "phishing_detail": StructType([
+        StructField("userfirstname", StringType()),
+        StructField("userlastname", StringType()),
+        StructField("useremailaddress", StringType()),
+        StructField("useractiveflag", IntegerType()),
+        StructField("userdeletedate", StringType()),
+        StructField("senttimestamp", StringType()),
+        StructField("eventtimestamp", StringType()),
+        StructField("eventtype", StringType()),
+        StructField("autoenrollment", IntegerType()),
+        StructField("campaignstartdate", StringType()),
+        StructField("campaigntype", StringType()),
+        StructField("campaignstatus", StringType()),
+        StructField("templatename", StringType()),
+        StructField("templatesubject", StringType()),
+        StructField("assessmentisarchived", StringType()),
+        StructField("usertags", StringType()),
+        StructField("sso_id", StringType()),
+        StructField("campaignenddate", StringType()),
+        StructField("Pass", BooleanType()),
+        StructField("Pass_Rate", DoubleType()),
+        StructField("Group", StringType()),
+        StructField("Region", StringType()),
+        StructField("campaignname", StringType()),
     ]),
 }
 

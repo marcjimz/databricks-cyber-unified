@@ -140,6 +140,38 @@ class MetricViewConfig(BaseModel):
     measures: list[MeasureConfig] = []
 
 
+class DetailColumnConfig(BaseModel):
+    """A column shown in a domain's drill-down table, SELECTed from the source
+    table. `field` is the source column; `label` is the display header."""
+    field: str
+    label: str = ""
+    # Optional value formatting hint for the frontend ("date", "datetime",
+    # "bool", "text"). Presentation only -- the value is returned as-is.
+    format: str = "text"
+
+
+class DetailFilterConfig(BaseModel):
+    """A quick-filter tab on the drill-down table. `where` is a TRUSTED SQL
+    predicate fragment from config (never user input) applied to the source
+    table. An empty `where` (or the default first tab) means no filter."""
+    key: str
+    label: str = ""
+    where: str = ""
+
+
+class DetailTableConfig(BaseModel):
+    """Config-driven drill-down table for a domain. The generic
+    /api/{domain}/rows endpoint SELECTs `columns` from the domain's
+    metric_view.source_table, applying the chosen `filters` predicate and
+    `order_by`. No per-domain row model or endpoint -- adding a table is pure
+    config. When absent/empty, the domain simply renders no table."""
+    label: str = "Records"
+    columns: list[DetailColumnConfig] = []
+    filters: list[DetailFilterConfig] = []
+    order_by: str = ""
+    page_size: int = 25
+
+
 class GenieConfig(BaseModel):
     space_id: str = ""
     embed_url: str = ""
@@ -160,6 +192,9 @@ class DomainConfig(BaseModel):
     genie: GenieConfig = GenieConfig()
     health: DomainHealthConfig = DomainHealthConfig()
     metric_view: MetricViewConfig
+    # Optional config-driven drill-down table. Absent -> the domain page renders
+    # no detail table (KPIs/trends still show).
+    detail_table: DetailTableConfig = DetailTableConfig()
 
 
 class TopLineKpiConfig(BaseModel):

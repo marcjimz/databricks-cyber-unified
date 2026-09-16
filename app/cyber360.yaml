@@ -63,300 +63,129 @@ features:
 # selected reporting period (30/60/90d) and surfaced as each KPI's `change`
 # line -- no hardcoded `trend` labels here. Keep captions only.
 top_line_kpis:
-  - domain: identity
-    measure: mfa_adoption
-    caption: "MFA adoption"
+  - domain: phishing
+    measure: phishing_click_rate
+    caption: "Phishing click rate"
 
-  - domain: vulnerability
-    measure: critical_cves_open
-    caption: "Critical CVEs open"
+  - domain: phishing
+    measure: phishing_report_rate
+    caption: "Phishing report rate"
 
-  - domain: vulnerability
-    measure: kev_unpatched
-    caption: "CISA KEV unpatched"
-
-  - domain: vulnerability
-    measure: patch_sla_compliance
-    caption: "Patch SLA compliance"
-
-  - domain: identity
-    measure: pam_vault_coverage
-    caption: "PAM vault coverage"
-
-  - domain: vulnerability
-    measure: mean_time_to_patch
-    caption: "Mean time to patch"
+  - domain: phishing
+    measure: count
+    caption: "Campaign events"
 
 # --- Security Domains ---
 domains:
   # ────────────────────────────────────────────
-  # Identity & Access Management
+  # Phishing & Email Security
   # ────────────────────────────────────────────
-  - key: identity
-    label: "Identity & Access Management"
-    short: "Identity & Access"
-    icon: fingerprint
+  - key: phishing
+    label: "Phishing & Email Security"
+    short: "Phishing"
+    icon: mail-warning
     description: >-
-      Identity & Access posture across authentication, account lifecycle,
-      and privileged access management.
+      Phishing & email-security posture across simulated-campaign outcomes:
+      how many recipients clicked, reported, or took no action.
 
     genie:
-      space_id: "01f02a3b4c5d6e7f8091a2b3c4d5e6f7"
-      embed_url: "${GENIE_IDENTITY_EMBED_URL}"
+      space_id: ""
+      embed_url: "${GENIE_PHISHING_EMBED_URL}"
       starters:
-        - "Which privileged accounts are missing MFA?"
-        - "Show orphaned accounts older than 30 days"
-        - "How has SSO adoption trended this quarter?"
+        - "What is the phishing click rate this month?"
+        - "Which campaigns had the highest click rate?"
+        - "Show the report rate by region"
 
     health:
       score_measures:
-        - mfa_adoption
-        - pam_vault_coverage
-        - access_recertification
+        - phishing_report_rate
       highlights:
-        - mfa_adoption
-        - orphaned_accounts
-        - pam_vault_coverage
+        - phishing_click_rate
+        - phishing_report_rate
+        - count
 
     metric_view:
-      name: mv_identity_access
-      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.identity_access"
+      name: mv_phishing
+      # Synthetic sandbox gold table. The edp_dev target points the metric
+      # view's :source_table param at conn_cyberarch.dbo.phishing_detail; this
+      # field is the app-side lineage/label + the pipeline's gold-table name.
+      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.phishing_detail"
       comment: >-
-        Identity & Access posture measures over authentication events,
-        account changes, and the account inventory snapshot.
+        Phishing & email-security measures over simulated-phishing campaign
+        events (click, report, and no-action outcomes).
       dimensions:
         - name: day
-          expression: "CAST(time AS DATE)"
+          expression: "CAST(eventtimestamp AS DATE)"
           comment: "Event date dimension"
-        - name: org_unit
-          expression: "actor_user_org_unit"
-          comment: "Business unit or department"
-        - name: auth_protocol
-          expression: "auth_protocol"
-          comment: "Authentication protocol (SAML, OIDC, Kerberos, LDAP)"
-        - name: is_privileged
-          expression: "is_privileged"
-          comment: "Whether the account is flagged as privileged"
-        - name: account_status
-          expression: "status"
-          comment: "Account lifecycle status"
+        - name: Region
+          expression: "Region"
+          comment: "Geographic region of the recipient"
+        - name: Campaign Name
+          expression: "campaignname"
+          comment: "Name of the phishing campaign"
+      # Measure MATH is written in PORTABLE SQL (CASE WHEN / NULLIF / standard
+      # division) and is IDENTICAL to resources/metricviews/mv_phishing.sql, so
+      # the same string evaluates in Spark (the metric view, prod) and DuckDB
+      # (the seed provider, local dev). Keep the two in sync.
       measures:
-        - name: mfa_adoption
-          label: "MFA adoption"
-          expression: "SUM(IF(is_mfa, 1, 0)) / COUNT(*) * 100"
-          comment: "Share of interactive authentications satisfied with an MFA factor."
+        - name: phishing_click_rate
+          label: "Phishing click rate"
+          expression: "COUNT(CASE WHEN eventtype = 'Email Click' THEN 1 END) / NULLIF(COUNT(*), 0) * 100"
+          comment: "Percentage of phishing emails where the recipient clicked the link."
           format: percent
-          percent_digits: 1
-          goal: higher
-          green: 99
-          amber: 95
-          caption: "Target: 100%"
-          trend: { direction: flat, label: "Stable" }
-
-        - name: privileged_accounts
-          label: "Privileged accounts (CyberArk)"
-          expression: "COUNT_IF(is_privileged = true)"
-          comment: "Count of accounts flagged privileged in the inventory."
-          format: count
-          goal: lower
-          fixed_status: amber
-          caption: "Reduction target -20%"
-
-        - name: orphaned_accounts
-          label: "Orphaned accounts"
-          expression: "COUNT_IF(owner_active = false AND status <> 'disabled')"
-          comment: "Active accounts whose owning employee is no longer in HR."
-          format: count
-          goal: lower
-          green: 10
-          amber: 50
-          caption: "30-day deactivation"
-
-        - name: sso_integration
-          label: "SSO integration (Ping)"
-          expression: "SUM(IF(via_sso, 1, 0)) / COUNT(*) * 100"
-          comment: "Percentage of authentications federated through the SSO provider."
-          format: percent
-          percent_digits: 0
-          goal: higher
-          green: 95
-          amber: 85
-          caption: "14 apps pending"
-
-        - name: pam_vault_coverage
-          label: "PAM vault coverage"
-          expression: "COUNT_IF(is_privileged AND in_pam_vault) / COUNT_IF(is_privileged) * 100"
-          comment: "Privileged accounts managed inside the PAM vault."
-          format: percent
-          percent_digits: 0
-          goal: higher
-          green: 95
-          amber: 80
-          caption: "Target: >95%"
-
-        - name: avg_provisioning
-          label: "Avg provisioning"
-          expression: "AVG(provisioning_hours) / 24"
-          comment: "Average time from account-create request to activation, in days."
-          format: days
-          goal: lower
-          green: 1
-          amber: 3
-          caption: "Target: Day-1 critical"
-
-        - name: access_recertification
-          label: "Access recertification"
-          expression: "COUNT_IF(last_recertified >= now() - INTERVAL 90 DAY) / COUNT(*) * 100"
-          comment: "Accounts recertified within the current 90-day review cycle."
-          format: percent
-          percent_digits: 0
-          goal: higher
-          green: 95
-          amber: 85
-          caption: "Quarterly via AccessHub"
-
-        - name: dormant_admin_accounts
-          label: "Dormant admin accounts"
-          expression: "COUNT_IF(is_privileged AND last_activity < now() - INTERVAL 90 DAY)"
-          comment: "Privileged accounts with no authentication event in 90+ days."
-          format: count
+          percent_digits: 2
           goal: lower
           green: 5
-          amber: 20
-          caption: "90-day review cycle"
-
-  # ────────────────────────────────────────────
-  # Vulnerability Management
-  # ────────────────────────────────────────────
-  - key: vulnerability
-    label: "Vulnerability Management"
-    short: "Vulnerability Mgmt"
-    icon: shield-alert
-    description: >-
-      Vulnerability posture across open findings, remediation SLAs,
-      and scan coverage.
-
-    genie:
-      space_id: "01f12b3c4d5e6f708192a3b4c5d6e7f8"
-      embed_url: "${GENIE_VULNERABILITY_EMBED_URL}"
-      starters:
-        - "List CISA KEV findings breaching SLA"
-        - "What assets have the most critical CVEs?"
-        - "Mean time to patch by severity this month"
-
-    health:
-      score_measures:
-        - patch_sla_compliance
-        - scan_coverage
-      highlights:
-        - critical_cves_open
-        - kev_unpatched
-        - patch_sla_compliance
-
-    metric_view:
-      name: mv_vulnerability_mgmt
-      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.vulnerability_management"
-      comment: >-
-        Vulnerability Management measures over vulnerability findings
-        and the asset scan-coverage inventory.
-      dimensions:
-        - name: day
-          expression: "CAST(first_seen AS DATE)"
-          comment: "Finding discovery date"
-        - name: severity
-          expression: "severity_id"
-          comment: "CVSS severity level"
-        - name: region
-          expression: "device_region"
-          comment: "Geographic region of the affected asset"
-        - name: asset_type
-          expression: "device_type"
-          comment: "Asset classification (Server, Workstation, etc.)"
-        - name: is_kev
-          expression: "cve_is_kev"
-          comment: "CISA Known Exploited Vulnerability catalog flag"
-        - name: finding_status
-          expression: "status_id"
-          comment: "Finding lifecycle status"
-      measures:
-        - name: critical_cves_open
-          label: "Critical CVEs open"
-          expression: "COUNT_IF(severity_id = 5 AND status_id IN (1,2))"
-          comment: "Open findings (new or in-progress) with critical CVSS severity."
-          format: count
-          goal: lower
-          green: 25
-          amber: 100
-          caption: "SLA: 15 days"
-
-        - name: high_cves_open
-          label: "High CVEs open"
-          expression: "COUNT_IF(severity_id = 4 AND status_id IN (1,2))"
-          comment: "Open findings with high CVSS severity."
-          format: count
-          goal: lower
-          green: 200
-          amber: 600
-          caption: "SLA: 30 days"
-
-        - name: kev_unpatched
-          label: "CISA KEV unpatched"
-          expression: "COUNT_IF(cve_is_kev AND status_id IN (1,2))"
-          comment: "Open findings on the CISA Known Exploited Vulnerabilities catalog."
-          format: count
-          goal: lower
-          green: 2
           amber: 10
-          caption: "48h SLA"
+          caption: "Target: <5%"
 
-        - name: patch_sla_compliance
-          label: "Patch SLA compliance"
-          expression: "COUNT_IF(resolved_time <= remediation_due) / NULLIF(COUNT_IF(status_id = 4), 0) * 100"
-          comment: "Resolved findings remediated within their severity-based SLA window."
+        - name: phishing_report_rate
+          label: "Phishing report rate"
+          expression: "COUNT(CASE WHEN eventtype = 'Reported' THEN 1 END) / NULLIF(COUNT(*), 0) * 100"
+          comment: "Percentage of phishing emails reported by the recipient."
           format: percent
-          percent_digits: 0
+          percent_digits: 2
           goal: higher
-          green: 95
-          amber: 85
-          caption: "Target: 95%"
-
-        - name: mean_time_to_patch
-          label: "Mean time to patch"
-          expression: "AVG(DATEDIFF(DAY, first_seen, resolved_time))"
-          comment: "Average days between first detection and remediation for resolved findings."
-          format: days
-          goal: lower
-          green: 7
-          amber: 14
-          caption: "Target: 7d"
-
-        - name: scan_coverage
-          label: "Scan coverage"
-          expression: "COUNT_IF(last_scanned >= now() - INTERVAL 30 DAY) / COUNT(*) * 100"
-          comment: "Assets with a successful vulnerability scan in the last 30 days."
-          format: percent
-          percent_digits: 0
-          goal: higher
-          green: 95
-          amber: 90
-          caption: "Agents + network"
-
-        - name: exception_count
-          label: "Exception count"
-          expression: "COUNT_IF(has_exception AND status_id = 3)"
-          comment: "Findings under an approved risk exception."
-          format: count
-          goal: lower
           green: 15
-          amber: 40
-          caption: "6 past due"
+          amber: 8
+          caption: "Target: >15%"
 
-        - name: assets_unscanned
-          label: "Assets unscanned (30d)"
-          expression: "COUNT_IF(last_scanned IS NULL OR last_scanned < now() - INTERVAL 30 DAY)"
-          comment: "Assets with no successful scan in 30 days."
-          format: count
+        - name: avg_click_rate
+          label: "Average click rate"
+          expression: "AVG(CASE WHEN eventtype = 'Email Click' THEN 1.0 ELSE 0.0 END) * 100"
+          comment: "Average click rate across all phishing records (1 clicked / 0 not)."
+          format: percent
+          percent_digits: 2
           goal: lower
-          green: 50
-          amber: 150
-          caption: "Requires investigation"
+          green: 5
+          amber: 10
+          caption: "Simulation average"
+
+        - name: count
+          label: "Campaign events"
+          expression: "COUNT(*)"
+          comment: "Total number of phishing-campaign event rows."
+          format: count
+          goal: higher
+          caption: "Simulated sends"
+
+    # Config-driven drill-down table. The generic /api/phishing/rows endpoint
+    # SELECTs these columns from metric_view.source_table (per-user OBO), applies
+    # the chosen filter's WHERE, and orders by order_by. Adding/removing a column
+    # or filter is a pure config edit -- no bespoke row model or endpoint.
+    detail_table:
+      label: "Campaign events"
+      order_by: "eventtimestamp DESC"
+      page_size: 25
+      columns:
+        - { field: eventtimestamp, label: "When", format: datetime }
+        - { field: useremailaddress, label: "Recipient" }
+        - { field: campaignname, label: "Campaign" }
+        - { field: eventtype, label: "Outcome" }
+        - { field: Region, label: "Region" }
+        - { field: templatesubject, label: "Subject" }
+      filters:
+        - { key: all, label: "All" }
+        - { key: clicked, label: "Clicked", where: "eventtype = 'Email Click'" }
+        - { key: reported, label: "Reported", where: "eventtype = 'Reported'" }
+        - { key: no_action, label: "No action", where: "eventtype = 'No Action'" }

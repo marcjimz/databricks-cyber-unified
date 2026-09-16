@@ -1,7 +1,12 @@
-"""Table data endpoints -- paginated drill-down tables.
+"""Generic, config-driven drill-down table endpoint.
 
-GET /api/identity/accounts     -- account inventory
-GET /api/vulnerability/findings -- vulnerability findings queue
+GET /api/{domain}/rows -- a page of the domain's detail table.
+
+There is ONE endpoint for every domain. What it returns is defined entirely by
+the domain's ``detail_table:`` config block (columns, filters, sort): the
+provider SELECTs those columns from the domain's ``source_table`` per-user (OBO).
+Adding a drill-down table is a pure config edit -- no per-domain endpoint or row
+model (the old /identity/accounts + /vulnerability/findings are gone).
 """
 
 from __future__ import annotations
@@ -10,32 +15,31 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.config import Cyber360Config
 from core.dependencies import get_config, get_obo_token
-from models.common import ApiResponse, Paginated, build_meta
-from models.identity import AccountRow, AccountsQuery
-from models.vulnerability import FindingRow, FindingsQuery
+from models.common import ApiResponse, build_meta
+from models.detail import DetailQuery, DetailRowsResponse
 from providers import get_provider
 
 router = APIRouter()
 
 
-@router.get("/identity/accounts")
-async def identity_accounts(
-    status: str | None = Query(None),
-    privileged: bool | None = Query(None),
+@router.get("/{domain_key}/rows")
+async def domain_rows(
+    domain_key: str,
+    filter: str | None = Query(None, description="One of the domain's configured filter keys"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     config: Cyber360Config = Depends(get_config),
     token: str = Depends(get_obo_token),
-) -> ApiResponse[Paginated[AccountRow]]:
-    provider = get_provider(config, token)
+) -> ApiResponse[DetailRowsResponse]:
+    domain = config.get_domain(domain_key)
+    if not domain:
+        raise HTTPException(status_code=404, detail=f"Unknown domain: {domain_key}")
 
+    provider = get_provider(config, token)
     try:
-        data = await provider.get_accounts(AccountsQuery(
-            status=status,
-            privileged=privileged,
-            page=page,
-            page_size=page_size,
-        ))
+        data = await provider.get_detail_rows(
+            domain_key, DetailQuery(filter_key=filter, page=page, page_size=page_size)
+        )
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -43,40 +47,7 @@ async def identity_accounts(
         data=data,
         meta=build_meta(
             provider.source,
-            ["mv_identity_access"],
-            ["orphaned_accounts", "dormant_admin_accounts"],
-        ),
-    )
-
-
-@router.get("/vulnerability/findings")
-async def vulnerability_findings(
-    severity: str | None = Query(None),
-    kev_only: bool = Query(False, alias="kevOnly"),
-    sla_breached_only: bool = Query(False, alias="slaBreachedOnly"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
-    config: Cyber360Config = Depends(get_config),
-    token: str = Depends(get_obo_token),
-) -> ApiResponse[Paginated[FindingRow]]:
-    provider = get_provider(config, token)
-
-    try:
-        data = await provider.get_findings(FindingsQuery(
-            severity=severity,
-            kev_only=kev_only,
-            sla_breached_only=sla_breached_only,
-            page=page,
-            page_size=page_size,
-        ))
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    return ApiResponse(
-        data=data,
-        meta=build_meta(
-            provider.source,
-            ["mv_vulnerability_mgmt"],
-            ["critical_cves_open", "high_cves_open", "kev_unpatched"],
+            [domain.metric_view.name],
+            [c.field for c in domain.detail_table.columns],
         ),
     )

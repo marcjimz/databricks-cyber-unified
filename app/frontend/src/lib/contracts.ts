@@ -106,12 +106,31 @@ export interface DomainConfig {
     measures: ConfigMeasure[]
   }
   /**
-   * Optional drill-down table type. The current backend does not emit this,
-   * so the generic domain page falls back to endpoint probing; declaring it
-   * here (e.g. "accounts" | "findings") lets a new domain opt into a table
-   * shape with zero page-code changes.
+   * Config-driven drill-down table. Columns + filter tabs come straight from
+   * cyber360.yaml's `detail_table:` block; the generic domain page renders them
+   * with zero per-domain code. `columns` empty -> no table. The filters' WHERE
+   * fragments are server-side only and never sent to the client.
    */
-  table?: string | null
+  detailTable: DomainDetailTable
+}
+
+export interface DomainDetailColumn {
+  field: string
+  label: string
+  format: string
+}
+
+export interface DomainDetailFilter {
+  key: string
+  label: string
+}
+
+export interface DomainDetailTable {
+  label: string
+  orderBy: string
+  pageSize: number
+  columns: DomainDetailColumn[]
+  filters: DomainDetailFilter[]
 }
 
 export interface TopLineKpiRef {
@@ -200,31 +219,23 @@ export interface Paginated<T> {
   page_size: number
 }
 
-export interface AccountRow {
-  uid: string
-  name: string
-  org_unit: string
-  privileged: boolean
-  sso_enrolled: boolean
-  in_pam_vault: boolean
-  last_activity: string | null
-  status: "active" | "dormant" | "orphaned" | "disabled"
+/**
+ * Generic, config-driven drill-down rows. Served by /api/{domain}/rows for ANY
+ * domain: `columns` mirrors the domain's detail_table config, `rows` are opaque
+ * field->value maps. Replaces the old per-domain AccountRow/FindingRow.
+ */
+export interface DetailColumn {
+  field: string
+  label: string
+  format: string
 }
 
-export interface FindingRow {
-  finding_uid: string
-  cve: string
-  cvss: number
-  severity: "Low" | "Medium" | "High" | "Critical"
-  is_kev: boolean
-  host: string
-  asset_type: string
-  first_seen: string
-  age_days: number
-  sla_due: string
-  sla_breached: boolean
-  fix_available: boolean
-  status: "New" | "In Progress" | "Exception" | "Resolved"
+export interface DetailRowsResponse {
+  columns: DetailColumn[]
+  rows: Record<string, string | number | boolean | null>[]
+  total: number
+  page: number
+  page_size: number
 }
 
 /* -------------------------------- incidents --------------------------------- */

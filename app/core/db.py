@@ -135,7 +135,20 @@ async def init_lakebase_pool(config: Cyber360Config) -> None:
         )
         _pool = AsyncConnectionPool(conninfo=dsn, min_size=1, max_size=5, open=False)
         await _pool.open()
-        logger.info("Lakebase app-level connection pool initialized")
+
+        # Ensure the SP-owned app schema exists BEFORE migrations run. On a fresh
+        # Lakebase database only `public` exists (and the SP is not its owner), so
+        # the search_path=<app_schema>,public would otherwise fall through to
+        # `public` and the migration DDL fails with "permission denied for schema
+        # public". The SP holds database-level CREATE (CAN_CONNECT_AND_CREATE), so
+        # it can create + own this schema itself -- no external grant needed.
+        app_schema = config.lakebase.app_schema
+        async with _pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{app_schema}"')
+            await conn.commit()
+
+        logger.info("Lakebase app-level connection pool initialized (schema=%s)", app_schema)
     except Exception:
         logger.exception("Failed to initialize Lakebase pool -- continuing without persistence")
         _pool = None

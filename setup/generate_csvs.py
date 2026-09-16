@@ -21,15 +21,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "pipelines"))
 
-from lib.generator import (  # noqa: E402
-    generate_identity_rows,
-    generate_vulnerability_rows,
-)
+from lib.generator import generate_phishing_rows  # noqa: E402
 
 # domain subdir -> (gold table csv name, generator fn)
 OUTPUTS = {
-    "identity": ("identity_access.csv", generate_identity_rows),
-    "vulnerability": ("vulnerability_management.csv", generate_vulnerability_rows),
+    "phishing": ("phishing_detail.csv", generate_phishing_rows),
 }
 
 

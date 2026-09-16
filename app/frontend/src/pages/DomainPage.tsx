@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { Navigate, useParams } from "react-router-dom"
 import {
   HorizontalBarChart,
@@ -6,9 +6,7 @@ import {
 } from "@/components/charts/breakdown-charts"
 import { ChartCard } from "@/components/charts/chart-card"
 import { TrendAreaChart } from "@/components/charts/trend-area-chart"
-import { AccountsTable } from "@/components/dashboard/accounts-table"
 import { DrillBreadcrumb } from "@/components/dashboard/drill-breadcrumb"
-import { FindingsTable } from "@/components/dashboard/findings-table"
 import { KpiCard } from "@/components/dashboard/kpi-card"
 import { ErrorState, LoadingGrid } from "@/components/dashboard/loading-state"
 import { PageHeader, SectionLabel } from "@/components/dashboard/page-header"
@@ -34,13 +32,12 @@ import { useApi } from "@/hooks/useApi"
 import { useReportingPeriod } from "@/hooks/useReportingPeriod"
 import { qs } from "@/lib/fetcher"
 import type {
-  AccountRow,
   ChartTrendPoint,
   ComparisonPeriod,
+  DetailRowsResponse,
+  DomainDetailTable,
   DomainMetricsResponse,
-  FindingRow,
   Kpi,
-  Paginated,
   TrendPoint,
 } from "@/lib/contracts"
 
@@ -128,137 +125,84 @@ function isSeverityBreakdown(name: string, items: { name: string }[]): boolean {
   return labels.length > 0 && labels.every((l) => severityLabels.includes(l))
 }
 
-type TableKind = "accounts" | "findings" | "none"
+/* -------------------------- generic detail table -------------------------- */
+
+/** Format a cell value using the column's config-declared format hint. */
+function formatCell(value: string | number | boolean | null, format: string): string {
+  if (value === null || value === undefined) return "—"
+  if (format === "bool") return value ? "Yes" : "No"
+  if ((format === "date" || format === "datetime") && typeof value === "string") {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) {
+      return format === "date" ? d.toLocaleDateString() : d.toLocaleString()
+    }
+  }
+  return String(value)
+}
 
 /**
- * Decide which drill-down table (if any) a domain uses. Prefers an explicit
- * config hint (`domain.table`), otherwise probes the two known generic table
- * endpoints. Probing keeps the page working for the current backend, which does
- * not emit a `table` field, while the config hint lets new domains opt in with
- * zero code.
+ * Generic, fully config-driven drill-down table. Columns and filter tabs come
+ * from the domain's `detailTable` config (via /api/config); rows come from
+ * /api/{domain}/rows. There is NO per-domain branching here -- adding a table
+ * to a new domain is a pure cyber360.yaml edit.
  */
-function useDomainTableKind(key: string, configured?: string | null): TableKind {
-  const [probed, setProbed] = useState<TableKind | null>(null)
+function DetailTableSection({
+  domainKey,
+  table,
+}: {
+  domainKey: string
+  table: DomainDetailTable
+}) {
+  const filters = table.filters.length > 0 ? table.filters : [{ key: "", label: "All" }]
+  const [filterKey, setFilterKey] = useState<string>(filters[0].key)
 
-  const explicit: TableKind | null =
-    configured === "accounts" || configured === "findings"
-      ? configured
-      : configured === "none"
-        ? "none"
-        : null
-
-  useEffect(() => {
-    if (explicit) {
-      setProbed(explicit)
-      return
-    }
-    let cancelled = false
-    setProbed(null)
-    // Probe accounts first, then findings. HEAD-like GET with page_size=1.
-    const tryProbe = async () => {
-      const probe = async (kind: "accounts" | "findings") => {
-        const path =
-          kind === "accounts"
-            ? `/api/${key}/accounts${qs({ page_size: 1 })}`
-            : `/api/${key}/findings${qs({ page_size: 1 })}`
-        const res = await fetch(path)
-        return res.ok
-      }
-      try {
-        if (await probe("accounts")) {
-          if (!cancelled) setProbed("accounts")
-          return
-        }
-      } catch {
-        /* fall through to findings */
-      }
-      try {
-        if (await probe("findings")) {
-          if (!cancelled) setProbed("findings")
-          return
-        }
-      } catch {
-        /* no table */
-      }
-      if (!cancelled) setProbed("none")
-    }
-    void tryProbe()
-    return () => {
-      cancelled = true
-    }
-  }, [key, explicit])
-
-  return probed ?? "none"
-}
-
-/* ----------------------------- table sections ----------------------------- */
-
-const ACCOUNT_FILTERS = ["orphaned", "dormant", "active", "disabled"] as const
-
-function AccountsSection({ domainKey }: { domainKey: string }) {
-  const [status, setStatus] =
-    useState<(typeof ACCOUNT_FILTERS)[number]>("orphaned")
-  const { data } = useApi<Paginated<AccountRow>>(
-    `/api/${domainKey}/accounts${qs({ status, page_size: 10 })}`,
+  const { data } = useApi<DetailRowsResponse>(
+    `/api/${domainKey}/rows${qs({
+      filter: filterKey || undefined,
+      page_size: table.pageSize || 25,
+    })}`,
   )
+
   return (
     <Card>
       <CardContent className="space-y-4 pt-6">
-        <Tabs value={status} onValueChange={(v) => setStatus(v as typeof status)}>
-          <TabsList>
-            {ACCOUNT_FILTERS.map((s) => (
-              <TabsTrigger key={s} value={s} className="capitalize">
-                {s}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {table.filters.length > 0 ? (
+          <Tabs value={filterKey} onValueChange={setFilterKey}>
+            <TabsList>
+              {filters.map((f) => (
+                <TabsTrigger key={f.key} value={f.key}>
+                  {f.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        ) : null}
         {data ? (
           <>
-            <AccountsTable rows={data.rows} />
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {data.columns.map((c) => (
+                      <TableHead key={c.field}>{c.label}</TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.rows.map((row, i) => (
+                    <TableRow key={i}>
+                      {data.columns.map((c) => (
+                        <TableCell key={c.field} className="text-xs">
+                          {formatCell(row[c.field] ?? null, c.format)}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
             <p className="text-xs text-muted-foreground">
-              Showing {data.rows.length} of {data.total} {status} accounts
-            </p>
-          </>
-        ) : (
-          <div className="h-48 animate-pulse rounded-lg bg-muted/50" />
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-const FINDING_FILTERS = [
-  { key: "kev", label: "KEV", params: { kevOnly: true } },
-  { key: "critical", label: "Critical", params: { severity: "Critical" } },
-  { key: "breached", label: "SLA breached", params: { slaBreachedOnly: true } },
-  { key: "high", label: "High", params: { severity: "High" } },
-] as const
-
-function FindingsSection({ domainKey }: { domainKey: string }) {
-  const [filter, setFilter] =
-    useState<(typeof FINDING_FILTERS)[number]["key"]>("kev")
-  const active = FINDING_FILTERS.find((f) => f.key === filter) ?? FINDING_FILTERS[0]
-  const { data } = useApi<Paginated<FindingRow>>(
-    `/api/${domainKey}/findings${qs({ ...active.params, page_size: 12 })}`,
-  )
-  return (
-    <Card>
-      <CardContent className="space-y-4 pt-6">
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
-          <TabsList>
-            {FINDING_FILTERS.map((f) => (
-              <TabsTrigger key={f.key} value={f.key}>
-                {f.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        {data ? (
-          <>
-            <FindingsTable rows={data.rows} />
-            <p className="text-xs text-muted-foreground">
-              Showing {data.rows.length} of {data.total} findings
+              Showing {data.rows.length} of {data.total.toLocaleString()} {table.label.toLowerCase()}
             </p>
           </>
         ) : (
@@ -367,7 +311,8 @@ export function DomainPage() {
     key ? `/api/metrics/${key}${qs({ period })}` : null,
   )
 
-  const tableKind = useDomainTableKind(key, domain?.table)
+  const detailTable = domain?.detailTable
+  const hasDetailTable = (detailTable?.columns.length ?? 0) > 0
 
   const compliance = useMemo(
     () => (data ? tallyCompliance(data.kpis) : null),
@@ -430,16 +375,10 @@ export function DomainPage() {
 
         {data ? <DomainCharts metrics={data} /> : null}
 
-        {tableKind !== "none" ? (
+        {hasDetailTable && detailTable ? (
           <section className="mb-8">
-            <SectionLabel>
-              {tableKind === "accounts" ? "Account inventory" : "Finding queue"}
-            </SectionLabel>
-            {tableKind === "accounts" ? (
-              <AccountsSection domainKey={key} />
-            ) : (
-              <FindingsSection domainKey={key} />
-            )}
+            <SectionLabel>{detailTable.label}</SectionLabel>
+            <DetailTableSection domainKey={key} table={detailTable} />
           </section>
         ) : null}
 

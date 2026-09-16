@@ -1,24 +1,20 @@
-"""Config-driven OCSF synthetic gold-table generator.
+"""Config-driven synthetic gold-table generator.
 
-Produces deterministic OCSF-aligned rows for each security domain's gold
-table. The distributions mirror the app's in-memory ``SeedProvider`` (same
-mulberry32 PRNG seeds) so the ``seed`` and ``lakebase`` providers tell the
-same story.
+Produces deterministic rows for each security domain's gold table, anchored to
+a caller-supplied ``now_ms``. The pipeline passes the real ``current_timestamp``
+so the ``now() - INTERVAL N DAY`` windows (and the metric view's ``day``
+dimension) always resolve against fresh data.
+
+Grain (denormalized so every measure expression in the domain's metric view is
+valid over a single ``source_table``):
+  * ``phishing_detail`` -> one row per recipient-per-campaign event
 
 Two consumers:
-  * The Lakeflow pipeline's demo-load stage (``00_gold.py``) turns these
-    rows into Spark DataFrames -> UC gold tables.
+  * The Lakeflow pipeline's demo-load stage turns these rows into Spark
+    DataFrames -> UC gold tables (only in the ``sandbox`` synthetic path; the
+    ``edp_dev`` target reads the real CyberArk-federated source instead).
   * The standalone CSV emitter (``make generate-data``) writes them to
-    ``data/<domain>/*.csv`` for reference and bring-your-own-data examples.
-
-Gold grain (denormalized so every measure expression in ``cyber360.yaml``
-is valid over a single ``source_table``):
-  * ``identity_access``          -> one row per account
-  * ``vulnerability_management`` -> one row per finding
-
-Timestamps are anchored to a caller-supplied ``now_ms``. The pipeline passes
-the real ``current_timestamp`` so the ``now() - INTERVAL N DAY`` windows in
-the measure expressions always resolve against fresh data.
+    ``data/<domain>/*.csv`` for reference.
 """
 
 from __future__ import annotations
@@ -28,31 +24,39 @@ from datetime import datetime, timezone
 DAY_MS = 86_400_000
 WINDOW_DAYS = 30
 
-ORG_UNITS = [
-    "Acute Care", "Ambulatory", "Medical Group", "Pharmacy",
-    "Revenue Cycle", "Corporate IT", "Research", "Supply Chain",
+# ── Phishing (simulated-campaign) synthetic universe ─────────────────────────
+PHISH_REGIONS = ["Canyons", "Intermountain", "Wasatch", "Desert", "Highlands", "Valley"]
+PHISH_GROUPS = ["A", "B", "C", "D", "E", "F"]
+PHISH_CAMPAIGN_TYPES = ["Drive By", "Spear Phishing", "Credential Harvest", "Attachment"]
+# (campaign name, email template name, template subject line)
+PHISH_CAMPAIGNS = [
+    ("Nov. 2024 Campaign Intermountain", "Microsoft Voicemail Notification", "You Have a New VN"),
+    ("Q4 Credential Refresh", "Okta Password Expiry", "Action Required: Reset Your Password"),
+    ("Payroll Update Drive", "Workday Payroll Notice", "Your December Pay Statement"),
+    ("Benefits Enrollment Blast", "HR Open Enrollment", "Complete Your 2025 Benefits"),
+    ("Shipping Notice Test", "DHL Delivery Alert", "Package Awaiting Delivery"),
 ]
-AUTH_PROTOCOLS = ["SAML", "OIDC", "Kerberos", "LDAP"]
-REGIONS = ["Utah", "Idaho", "Nevada", "Colorado", "Montana", "Wyoming"]
-ASSET_TYPES = ["Server", "Workstation", "Medical Device", "Network", "Container"]
+# Simulated-phishing outcome mix (must sum to ~1.0). "No Action" dominates; a
+# realistic minority click, a healthy share report, a few bounce.
+PHISH_OUTCOMES = [
+    ("No Action", 0.66),
+    ("Reported", 0.18),
+    ("Email Click", 0.11),
+    ("Email Open", 0.04),
+    ("Bounced", 0.01),
+]
+PHISH_FIRST_NAMES = [
+    "Alton", "Marcy", "Devon", "Priya", "Luis", "Hana", "Grant", "Ada",
+    "Theo", "Nadia", "Owen", "Rosa", "Kai", "Mira", "Seth", "Lena",
+]
+PHISH_LAST_NAMES = [
+    "Burgett", "Nguyen", "Ramos", "Patel", "OConnor", "Kim", "Silva", "Novak",
+    "Frost", "Abadi", "Delgado", "Haas", "Yoon", "Barros", "Whitaker", "Ferro",
+]
 
-# Identity account inventory sizing (mirrors SeedProvider).
-ID_TOTAL = 9000
-ID_PRIVILEGED = 5142
-ID_ORPHANED = 38
-ID_DORMANT_ADMINS = 12
-
-# Vulnerability finding sizing (mirrors SeedProvider).
-VULN_CRITICAL = 142
-VULN_CRITICAL_KEV = 18
-VULN_HIGH = 891
-VULN_MEDIUM = 1400
-VULN_LOW = 900
-VULN_EXCEPTIONS = 24
-VULN_RESOLVED = 2600
-
-IDENTITY_SEED = 0x1DE17
-VULN_SEED = 0x5EC1
+# Phishing sizing (one row per recipient-per-campaign event).
+PHISH_RECIPIENTS = 1800
+PHISH_SEED = 0xF15A
 
 
 def default_now_ms() -> int:
@@ -82,6 +86,18 @@ def _pick(rng, items):
     return items[int(rng() * len(items))]
 
 
+def _weighted_pick(rng, weighted: list[tuple]):
+    """Pick from a list of (value, weight) by cumulative weight."""
+    total = sum(w for _, w in weighted)
+    r = rng() * total
+    upto = 0.0
+    for value, weight in weighted:
+        upto += weight
+        if r < upto:
+            return value
+    return weighted[-1][0]
+
+
 def _rand_int(rng, lo: int, hi: int) -> int:
     return int(rng() * (hi - lo + 1)) + lo
 
@@ -100,138 +116,83 @@ def _ms(dt: datetime | None) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Identity gold rows (account grain)
+# Phishing gold rows (recipient-per-campaign-event grain)
 # ---------------------------------------------------------------------------
+#
+# Columns mirror the CyberArk `phishing_detail` source so the synthetic sandbox
+# table is schema-compatible with the real federated table the edp_dev target
+# reads. The metric view (mv_phishing) derives its `day` dimension from
+# `eventtimestamp` and its rate measures from `eventtype`.
 
-def generate_identity_rows(now_ms: int | None = None) -> list[dict]:
-    """One row per account with all columns the identity measures reference."""
+def generate_phishing_rows(now_ms: int | None = None) -> list[dict]:
+    """One row per recipient-per-campaign phishing-simulation event."""
     now_ms = now_ms or default_now_ms()
-    rng = mulberry32(IDENTITY_SEED)
+    rng = mulberry32(PHISH_SEED)
     rows: list[dict] = []
 
-    for i in range(ID_TOTAL):
-        is_priv = i < ID_PRIVILEGED
-        is_orphaned = i >= ID_TOTAL - ID_ORPHANED
-        is_dormant_admin = is_priv and i < ID_DORMANT_ADMINS
+    for i in range(PHISH_RECIPIENTS):
+        first = _pick(rng, PHISH_FIRST_NAMES)
+        last = _pick(rng, PHISH_LAST_NAMES)
+        email = f"{first[0].lower()}.{last.lower()}@imail.org"
 
-        if is_dormant_admin:
-            last_activity = _ts_days_ago(rng, _rand_int(rng, 95, 200), now_ms)
-        elif is_orphaned:
-            last_activity = _ts_days_ago(rng, _rand_int(rng, 40, 120), now_ms)
-        else:
-            last_activity = _ts_days_ago(rng, _rand_int(rng, 0, 20), now_ms)
+        campaign_name, template_name, template_subject = _pick(rng, PHISH_CAMPAIGNS)
+        campaign_type = _pick(rng, PHISH_CAMPAIGN_TYPES)
 
-        last_recertified = (
-            _ts_days_ago(rng, _rand_int(rng, 0, 89), now_ms)
-            if _chance(rng, 0.94)
-            else _ts_days_ago(rng, _rand_int(rng, 91, 200), now_ms)
-        )
+        # Campaign runs on a ~14-day window that started 0-30 days ago; the
+        # send + event land inside it so `day` spreads across the reporting
+        # windows the app filters on.
+        start = _ts_days_ago(rng, _rand_int(rng, 0, 30), now_ms)
+        start_ms = _ms(start)
+        end_ms = start_ms + _rand_int(rng, 7, 21) * DAY_MS
+        sent_ms = start_ms + _rand_int(rng, 0, 3) * DAY_MS + int(rng() * DAY_MS)
+        # Event happens 0-2 days after send.
+        event_ms = sent_ms + int(rng() * 2 * DAY_MS)
 
-        via_sso = _chance(rng, 0.91)
-        is_mfa = _chance(rng, 0.992)
-        provisioning_hours = _rand_int(rng, 36, 66) if _chance(rng, 0.15) else None
-        status = "orphaned" if is_orphaned else ("dormant" if is_dormant_admin else "active")
+        eventtype = _weighted_pick(rng, PHISH_OUTCOMES)
+        # Pass = the recipient did NOT fall for it (reported or took no action).
+        passed = eventtype in ("Reported", "No Action")
+
+        user_active = _chance(rng, 0.96)
+        user_deleted = None if user_active else _ts_days_ago(rng, _rand_int(rng, 1, 400), now_ms)
 
         rows.append({
-            "account_uid": f"acct-{100000 + i}",
-            "account_name": f"svc.admin.{i}" if is_priv else f"caregiver.{i}",
-            "time": last_activity,
-            "actor_user_org_unit": _pick(rng, ORG_UNITS),
-            "auth_protocol": _pick(rng, ["SAML", "OIDC"]) if via_sso else _pick(rng, AUTH_PROTOCOLS),
-            "is_privileged": is_priv,
-            "status": status,
-            "is_mfa": is_mfa,
-            "via_sso": via_sso,
-            "owner_active": not is_orphaned,
-            "in_pam_vault": _chance(rng, 0.87) if is_priv else False,
-            "provisioning_hours": float(provisioning_hours) if provisioning_hours is not None else None,
-            "last_recertified": last_recertified,
-            "last_activity": last_activity,
+            "userfirstname": first,
+            "userlastname": last,
+            "useremailaddress": email,
+            "useractiveflag": 1 if user_active else 0,
+            "userdeletedate": _iso(user_deleted),
+            "senttimestamp": _iso(_dt(sent_ms)),
+            "eventtimestamp": _iso(_dt(event_ms)),
+            "eventtype": eventtype,
+            "autoenrollment": 1 if _chance(rng, 0.7) else 0,
+            "campaignstartdate": _iso(_dt(start_ms)),
+            "campaigntype": campaign_type,
+            "campaignstatus": "Completed" if end_ms < now_ms else "Active",
+            "templatename": template_name,
+            "templatesubject": template_subject,
+            "assessmentisarchived": "false" if _chance(rng, 0.9) else "true",
+            "usertags": _pick(rng, ["E", "S", "M", "L"]),
+            "sso_id": f"SSO{100000 + i}",
+            "campaignenddate": _iso(_dt(end_ms)),
+            "Pass": passed,
+            "Pass_Rate": 1.0 if passed else 0.0,
+            "Group": _pick(rng, PHISH_GROUPS),
+            "Region": _pick(rng, PHISH_REGIONS),
+            "campaignname": campaign_name,
         })
 
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Vulnerability gold rows (finding grain)
-# ---------------------------------------------------------------------------
-
-def _sla_days(sev: int) -> int:
-    return {5: 15, 4: 30, 3: 60}.get(sev, 90)
+def _dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
-def _cvss_for(rng, sev: int) -> float:
-    if sev == 5:
-        return round((9 + rng() * 1) * 10) / 10
-    if sev == 4:
-        return round((7 + rng() * 1.9) * 10) / 10
-    if sev == 3:
-        return round((4 + rng() * 2.9) * 10) / 10
-    return round((0.1 + rng() * 3.8) * 10) / 10
-
-
-def generate_vulnerability_rows(now_ms: int | None = None) -> list[dict]:
-    """One row per finding with all columns the vulnerability measures reference."""
-    now_ms = now_ms or default_now_ms()
-    rng = mulberry32(VULN_SEED)
-    rows: list[dict] = []
-    seq = 0
-
-    def make(sev: int, status: int, *, is_kev: bool = False, has_exception: bool = False):
-        nonlocal seq
-        seq += 1
-        first_seen = _ts_days_ago(rng, _rand_int(rng, 1, 90), now_ms)
-        due = datetime.fromtimestamp((_ms(first_seen) + _sla_days(sev) * DAY_MS) / 1000, tz=timezone.utc)
-        resolved_time = None
-        if status == 4:
-            within_sla = _chance(rng, 0.83)
-            cap = min(_sla_days(sev) - 1, 16)
-            patch_days = _rand_int(rng, 2, cap) if within_sla else _sla_days(sev) + _rand_int(rng, 1, 8)
-            resolved_time = datetime.fromtimestamp(
-                (_ms(first_seen) + patch_days * DAY_MS) / 1000, tz=timezone.utc
-            )
-
-        # Device scan recency: findings on unscanned/stale devices bring coverage down.
-        if _chance(rng, 0.965):
-            last_scanned = _ts_days_ago(rng, _rand_int(rng, 0, 29), now_ms)
-        elif _chance(rng, 0.5):
-            last_scanned = _ts_days_ago(rng, _rand_int(rng, 31, 120), now_ms)
-        else:
-            last_scanned = None
-
-        hostname_type = _pick(rng, ASSET_TYPES).lower().replace(" ", "")
-        rows.append({
-            "finding_uid": f"vf-{200000 + seq}",
-            "first_seen": first_seen,
-            "severity_id": sev,
-            "status_id": status,
-            "cve_uid": f"CVE-2026-{_rand_int(rng, 1000, 49999)}",
-            "cvss_score": _cvss_for(rng, sev),
-            "cve_is_kev": is_kev,
-            "device_hostname": f"ih-{hostname_type}-{_rand_int(rng, 100, 999)}",
-            "device_type": _pick(rng, ASSET_TYPES),
-            "device_region": _pick(rng, REGIONS),
-            "resolved_time": resolved_time,
-            "is_fix_available": _chance(rng, 0.78),
-            "remediation_due": due,
-            "has_exception": has_exception,
-            "last_scanned": last_scanned,
-        })
-
-    for i in range(VULN_CRITICAL):
-        make(5, 1 if i < VULN_CRITICAL_KEV else 2, is_kev=i < VULN_CRITICAL_KEV)
-    for _ in range(VULN_HIGH):
-        make(4, 1 if _chance(rng, 0.5) else 2)
-    for _ in range(VULN_MEDIUM):
-        make(3, 1 if _chance(rng, 0.5) else 2)
-    for _ in range(VULN_LOW):
-        make(2, 1 if _chance(rng, 0.5) else 2)
-    for _ in range(VULN_EXCEPTIONS):
-        make(_pick(rng, [4, 3]), 3, has_exception=True)
-    for _ in range(VULN_RESOLVED):
-        make(_pick(rng, [5, 4, 3, 2]), 4)
-
-    return rows
+def _iso(dt: datetime | None) -> str | None:
+    """ISO-8601 with a trailing Z (matches the CyberArk source's timestamp form)."""
+    if dt is None:
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +200,7 @@ def generate_vulnerability_rows(now_ms: int | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 GOLD_GENERATORS = {
-    "identity_access": generate_identity_rows,
-    "vulnerability_management": generate_vulnerability_rows,
+    "phishing_detail": generate_phishing_rows,
 }
 
 

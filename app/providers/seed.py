@@ -1,33 +1,44 @@
-"""SeedProvider -- in-memory OCSF data generation and measure computation.
+"""SeedProvider -- generic, config-driven local provider (zero workspace deps).
 
-Faithfully ports the TypeScript SeedProvider from the v0 reference.
-Uses the same mulberry32 PRNG seeds to produce identical data distributions.
+Used for `make dev` and any deployment with `provider: seed`. It computes EVERY
+domain's KPIs, trend, and drill-down rows generically:
+
+  * the synthetic rows come from ``pipelines/lib/generator.py`` -- the SAME
+    generator the Lakeflow pipeline uses to land the gold table, so the seed
+    story matches the deployed one;
+  * the measure math is evaluated by running each domain's config measure
+    ``expression`` (the IDENTICAL portable SQL that lives in the metric view)
+    against those rows in an in-process **DuckDB** engine.
+
+There is NO per-domain code here (no ``if domain == 'identity'``). Adding a
+domain to ``cyber360.yaml`` + a generator makes the seed provider serve it with
+zero changes -- mirroring the metric-view provider's config-driven contract.
+
+DuckDB is an OPTIONAL dependency: if it (or the generator) is unavailable, the
+provider degrades to zeros rather than failing, so the production ``metricview``
+path never depends on it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+import logging
+from datetime import date, datetime
 from typing import Any
 
 from core.config import (
     Cyber360Config,
-    MeasureConfig,
-    TrendConfig,
+    DomainConfig,
+    _format_change,
     build_change,
     format_measure_value,
+    normalize_period,
     rag_for_measure,
     rollup_status,
 )
-from models.common import Kpi, KpiChange, KpiLineage, Paginated, TrendInfo, TrendPoint
-from models.domain import BreakdownItem, DomainMetricsResponse
-from models.identity import AccountRow, AccountsQuery
-from models.incidents import (
-    IncidentMttr,
-    IncidentRecord,
-    IncidentSeverityCounts,
-    IncidentsResponse,
-)
+from models.common import Kpi, KpiChange, KpiLineage, TrendInfo, TrendPoint
+from models.detail import DetailColumn, DetailQuery, DetailRowsResponse
+from models.domain import DomainMetricsResponse
+from models.incidents import IncidentsResponse
 from models.scorecard import (
     ComplianceCounts,
     DomainHealth,
@@ -35,547 +46,223 @@ from models.scorecard import (
     ScorecardOrg,
     ScorecardResponse,
 )
-from models.vulnerability import FindingRow, FindingsQuery
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
 
-NOW = int(datetime(2026, 6, 23, 18, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
-DAY = 86_400_000
-WINDOW_DAYS = 30
+DEFAULT_PERIOD = 30
 
-ORG_UNITS = [
-    "Acute Care", "Ambulatory", "Medical Group", "Pharmacy",
-    "Revenue Cycle", "Corporate IT", "Research", "Supply Chain",
-]
-AUTH_PROTOCOLS = ["SAML", "OIDC", "Kerberos", "LDAP"]
-MFA_FACTORS = ["FIDO2", "Push", "TOTP", "SMS"]
-SERVICES = ["Epic", "Workday", "ServiceNow", "Microsoft 365", "Citrix", "Cerner", "VPN"]
-REGIONS = ["Utah", "Idaho", "Nevada", "Colorado", "Montana", "Wyoming"]
-ASSET_TYPES = ["Server", "Workstation", "Medical Device", "Network", "Container"]
-OS_NAMES = ["Windows Server", "RHEL", "Ubuntu", "VMware ESXi", "Windows 11"]
 
+def _load_generator():
+    """Import the shared synthetic generator lazily (keeps it optional)."""
+    import sys
+    from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Mulberry32 PRNG (deterministic, matches TypeScript implementation)
-# ---------------------------------------------------------------------------
+    # pipelines/ lives next to app/ in the repo; add it to the path once.
+    repo_root = Path(__file__).resolve().parents[2]
+    pipelines = repo_root / "pipelines"
+    if pipelines.is_dir() and str(pipelines) not in sys.path:
+        sys.path.insert(0, str(pipelines))
+    from lib.generator import GOLD_GENERATORS, generate_gold  # type: ignore
 
-def mulberry32(seed: int):
-    """Mulberry32 PRNG -- produces identical output to the JS version."""
-    a = seed & 0xFFFFFFFF
+    return GOLD_GENERATORS, generate_gold
 
-    def next_val() -> float:
-        nonlocal a
-        a = (a + 0x6D2B79F5) & 0xFFFFFFFF
-        t = ((a ^ (a >> 15)) * (1 | a)) & 0xFFFFFFFF
-        t = (t + (((t ^ (t >> 7)) * (61 | t)) & 0xFFFFFFFF)) & 0xFFFFFFFF
-        t = (t ^ (t >> 14)) & 0xFFFFFFFF
-        return t / 4294967296
-
-    return next_val
-
-
-def pick(rng, items: list | tuple):
-    return items[int(rng() * len(items))]
-
-
-def rand_int(rng, lo: int, hi: int) -> int:
-    return int(rng() * (hi - lo + 1)) + lo
-
-
-def chance(rng, prob: float) -> bool:
-    return rng() < prob
-
-
-def time_days_ago(rng, days_ago: int, now: int) -> int:
-    return now - days_ago * DAY - int(rng() * DAY)
-
-
-def day_key(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-
-
-def pct(n: int | float, d: int | float) -> float:
-    return 0 if d == 0 else (n / d) * 100
-
-
-# ---------------------------------------------------------------------------
-# OCSF Record Types (simplified dicts for seed use)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class AuthEvent:
-    time: int
-    is_mfa: bool
-    via_sso: bool
-    auth_protocol: str
-    org_unit: str
-    status_success: bool
-
-
-@dataclass
-class AccountChange:
-    time: int
-    activity_id: int
-    provisioning_hours: int | None
-
-
-@dataclass
-class AccountRecord:
-    uid: str
-    name: str
-    org_unit: str
-    is_privileged: bool
-    in_pam_vault: bool
-    sso_enrolled: bool
-    last_activity: int | None
-    owner_active: bool
-    last_recertified: int | None
-    status: str  # active, dormant, orphaned, disabled
-
-
-@dataclass
-class VulnFinding:
-    finding_uid: str
-    time: int
-    severity_id: int  # 2=Low, 3=Medium, 4=High, 5=Critical
-    status_id: int    # 1=New, 2=InProgress, 3=Exception, 4=Resolved
-    cve_uid: str
-    cvss_score: float
-    is_kev: bool
-    device_hostname: str
-    device_type: str
-    device_region: str
-    first_seen: int
-    resolved_time: int | None
-    is_fix_available: bool
-    remediation_due: int
-    has_exception: bool
-
-
-@dataclass
-class AssetRecord:
-    uid: str
-    hostname: str
-    type: str
-    region: str
-    last_scanned: int | None
-    agent_installed: bool
-
-
-@dataclass
-class IdentitySeed:
-    auth_events: list[AuthEvent] = field(default_factory=list)
-    account_changes: list[AccountChange] = field(default_factory=list)
-    accounts: list[AccountRecord] = field(default_factory=list)
-
-
-@dataclass
-class VulnerabilitySeed:
-    findings: list[VulnFinding] = field(default_factory=list)
-    assets: list[AssetRecord] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Seed data generators
-# ---------------------------------------------------------------------------
-
-_identity_cache: IdentitySeed | None = None
-_vuln_cache: VulnerabilitySeed | None = None
-
-
-def get_identity_seed() -> IdentitySeed:
-    global _identity_cache
-    if _identity_cache:
-        return _identity_cache
-
-    rng = mulberry32(0x1DE17)
-
-    # Auth events
-    auth_events = []
-    for i in range(8000):
-        is_mfa = chance(rng, 0.992)
-        via_sso = chance(rng, 0.91)
-        success = chance(rng, 0.94)
-        auth_events.append(AuthEvent(
-            time=time_days_ago(rng, rand_int(rng, 0, WINDOW_DAYS - 1), NOW),
-            is_mfa=is_mfa,
-            via_sso=via_sso,
-            auth_protocol=pick(rng, ["SAML", "OIDC"]) if via_sso else pick(rng, AUTH_PROTOCOLS),
-            org_unit=pick(rng, ORG_UNITS),
-            status_success=success,
-        ))
-
-    # Account changes
-    account_changes = []
-    activities = [1, 2, 3, 4, 6, 8]
-    for i in range(1200):
-        activity = pick(rng, activities)
-        _ = chance(rng, 0.2)  # is_priv (consumed for RNG consistency)
-        account_changes.append(AccountChange(
-            time=time_days_ago(rng, rand_int(rng, 0, WINDOW_DAYS - 1), NOW),
-            activity_id=activity,
-            provisioning_hours=rand_int(rng, 36, 66) if activity == 1 else None,
-        ))
-
-    # Account inventory
-    accounts = []
-    TOTAL = 9000
-    PRIVILEGED = 5142
-    ORPHANED = 38
-    DORMANT_ADMINS = 12
-
-    for i in range(TOTAL):
-        is_priv = i < PRIVILEGED
-        is_orphaned = i >= TOTAL - ORPHANED
-        is_dormant_admin = is_priv and i < DORMANT_ADMINS
-
-        if is_dormant_admin:
-            last_activity = time_days_ago(rng, rand_int(rng, 95, 200), NOW)
-        elif is_orphaned:
-            last_activity = time_days_ago(rng, rand_int(rng, 40, 120), NOW)
-        else:
-            last_activity = time_days_ago(rng, rand_int(rng, 0, 20), NOW)
-
-        recertified = (
-            time_days_ago(rng, rand_int(rng, 0, 89), NOW)
-            if chance(rng, 0.94)
-            else time_days_ago(rng, rand_int(rng, 91, 200), NOW)
-        )
-
-        status = "orphaned" if is_orphaned else ("dormant" if is_dormant_admin else "active")
-
-        accounts.append(AccountRecord(
-            uid=f"acct-{100000 + i}",
-            name=f"svc.admin.{i}" if is_priv else f"caregiver.{i}",
-            org_unit=pick(rng, ORG_UNITS),
-            is_privileged=is_priv,
-            in_pam_vault=chance(rng, 0.87) if is_priv else False,
-            sso_enrolled=chance(rng, 0.91),
-            last_activity=last_activity,
-            owner_active=not is_orphaned,
-            last_recertified=recertified,
-            status=status,
-        ))
-
-    _identity_cache = IdentitySeed(
-        auth_events=auth_events,
-        account_changes=account_changes,
-        accounts=accounts,
-    )
-    return _identity_cache
-
-
-def _sla_days(sev: int) -> int:
-    if sev == 5:
-        return 15  # Critical
-    if sev == 4:
-        return 30  # High
-    if sev == 3:
-        return 60  # Medium
-    return 90  # Low
-
-
-def _cvss_for(rng, sev: int) -> float:
-    if sev == 5:
-        return round((9 + rng() * 1) * 10) / 10
-    if sev == 4:
-        return round((7 + rng() * 1.9) * 10) / 10
-    if sev == 3:
-        return round((4 + rng() * 2.9) * 10) / 10
-    return round((0.1 + rng() * 3.8) * 10) / 10
-
-
-def get_vulnerability_seed() -> VulnerabilitySeed:
-    global _vuln_cache
-    if _vuln_cache:
-        return _vuln_cache
-
-    rng = mulberry32(0x5EC1)
-    findings: list[VulnFinding] = []
-    seq = 0
-
-    def make(sev: int, status: int, *, is_kev: bool = False, has_exception: bool = False):
-        nonlocal seq
-        seq += 1
-        first_seen = time_days_ago(rng, rand_int(rng, 1, 90), NOW)
-        due = first_seen + _sla_days(sev) * DAY
-        resolved_time = None
-        if status == 4:
-            within_sla = chance(rng, 0.83)
-            cap = min(_sla_days(sev) - 1, 16)
-            patch_days = rand_int(rng, 2, cap) if within_sla else _sla_days(sev) + rand_int(rng, 1, 8)
-            resolved_time = first_seen + patch_days * DAY
-
-        hostname_type = pick(rng, ASSET_TYPES).lower().replace(" ", "")
-        findings.append(VulnFinding(
-            finding_uid=f"vf-{200000 + seq}",
-            time=first_seen,
-            severity_id=sev,
-            status_id=status,
-            cve_uid=f"CVE-2026-{rand_int(rng, 1000, 49999)}",
-            cvss_score=_cvss_for(rng, sev),
-            is_kev=is_kev,
-            device_hostname=f"ih-{hostname_type}-{rand_int(rng, 100, 999)}",
-            device_type=pick(rng, ASSET_TYPES),
-            device_region=pick(rng, REGIONS),
-            first_seen=first_seen,
-            resolved_time=resolved_time,
-            is_fix_available=chance(rng, 0.78),
-            remediation_due=due,
-            has_exception=has_exception,
-        ))
-
-    # Open criticals: 142 (18 KEV)
-    for i in range(142):
-        make(5, 1 if i < 18 else 2, is_kev=i < 18)
-    # Open highs: 891
-    for _ in range(891):
-        make(4, 1 if chance(rng, 0.5) else 2)
-    # Open mediums: 1400
-    for _ in range(1400):
-        make(3, 1 if chance(rng, 0.5) else 2)
-    # Open lows: 900
-    for _ in range(900):
-        make(2, 1 if chance(rng, 0.5) else 2)
-    # Exceptions: 24
-    for _ in range(24):
-        make(pick(rng, [4, 3]), 3, has_exception=True)
-    # Resolved: 2600
-    for _ in range(2600):
-        make(pick(rng, [5, 4, 3, 2]), 4)
-
-    # Assets
-    assets = []
-    TOTAL_ASSETS = 6767
-    UNSCANNED = 203
-    for i in range(TOTAL_ASSETS):
-        unscanned = i < UNSCANNED
-        if unscanned:
-            last_scanned = None if chance(rng, 0.4) else time_days_ago(rng, rand_int(rng, 31, 120), NOW)
-        else:
-            last_scanned = time_days_ago(rng, rand_int(rng, 0, 29), NOW)
-        assets.append(AssetRecord(
-            uid=f"asset-{300000 + i}",
-            hostname=f"ih-asset-{i}",
-            type=pick(rng, ASSET_TYPES),
-            region=pick(rng, REGIONS),
-            last_scanned=last_scanned,
-            agent_installed=chance(rng, 0.96),
-        ))
-
-    _vuln_cache = VulnerabilitySeed(findings=findings, assets=assets)
-    return _vuln_cache
-
-
-# ---------------------------------------------------------------------------
-# Incident seed data
-# ---------------------------------------------------------------------------
-
-# A dense demo data-table -- one incident per line is the readable form, so the
-# long-line rule is waived here rather than wrapping each constructor.
-INCIDENTS = [
-    IncidentRecord(uid="inc-1", priority="P1", label="Critical", domain="vulnerability", status="investigating", mttr_hours=4.2, opened_time=int(datetime(2026, 6, 23, 13, 45, tzinfo=timezone.utc).timestamp() * 1000), title="Exploited KEV on perimeter VPN appliance"),  # noqa: E501
-    IncidentRecord(uid="inc-2", priority="P2", label="High", domain="identity", status="investigating", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 23, 8, 10, tzinfo=timezone.utc).timestamp() * 1000), title="Suspicious privileged login from new geo"),  # noqa: E501
-    IncidentRecord(uid="inc-3", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 22, 30, tzinfo=timezone.utc).timestamp() * 1000), title="Unpatched critical CVE on Epic interface server"),  # noqa: E501
-    IncidentRecord(uid="inc-4", priority="P2", label="High", domain="identity", status="contained", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 16, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Orphaned admin account reactivated"),  # noqa: E501
-    IncidentRecord(uid="inc-5", priority="P2", label="High", domain="vulnerability", status="open", mttr_hours=6.1, opened_time=int(datetime(2026, 6, 22, 9, 20, tzinfo=timezone.utc).timestamp() * 1000), title="Scan gap on clinical network segment"),  # noqa: E501
-    IncidentRecord(uid="inc-6", priority="P3", label="Medium", domain="identity", status="open", mttr_hours=18.4, opened_time=int(datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc).timestamp() * 1000), title="MFA fatigue attempts against caregiver accounts"),  # noqa: E501
-    IncidentRecord(uid="inc-7", priority="P4", label="Low", domain="vulnerability", status="open", mttr_hours=3.2, opened_time=int(datetime(2026, 6, 20, 6, 0, tzinfo=timezone.utc).timestamp() * 1000), title="Low-sev TLS configuration finding"),  # noqa: E501
-]
-
-INCIDENT_OPEN_COUNTS = IncidentSeverityCounts(P1=1, P2=4, P3=17, P4=43)
-INCIDENT_MTTR = IncidentMttr(P1="4.2h", P2="6.1h", P3="18.4h", P4="3.2d")
-
-
-# ---------------------------------------------------------------------------
-# KPI builder
-# ---------------------------------------------------------------------------
-
-def _build_kpi(
-    measure: MeasureConfig,
-    raw: float,
-    period: int,
-    override_caption: str | None = None,
-    override_trend: TrendConfig | None = None,
-) -> Kpi:
-    trend = override_trend or measure.trend
-    return Kpi(
-        key=measure.name,
-        label=measure.label,
-        value=format_measure_value(measure, raw),
-        raw=raw,
-        status=rag_for_measure(measure, raw),
-        caption=override_caption or measure.caption,
-        trend=TrendInfo(direction=trend.direction, label=trend.label) if trend else None,
-        change=KpiChange(**build_change(measure, raw, period)),
-        lineage=KpiLineage(
-            measure=measure.name,
-            expression=measure.expression,
-            comment=measure.comment,
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# SeedProvider
-# ---------------------------------------------------------------------------
 
 class SeedProvider:
-    """In-memory data provider using deterministic OCSF seed data."""
+    """In-memory, config-driven provider backed by DuckDB over synthetic rows."""
 
     source = "seed"
 
     def __init__(self, config: Cyber360Config):
         self.config = config
+        self._con = None  # lazy DuckDB connection
+        self._registered: set[str] = set()
 
-    # ── Identity computation ──
+    # ── DuckDB engine ──
 
-    def _compute_identity(self) -> dict[str, Any]:
-        seed = get_identity_seed()
-        total_auth = len(seed.auth_events)
-        mfa_count = sum(1 for e in seed.auth_events if e.is_mfa)
-        sso_count = sum(1 for e in seed.auth_events if e.via_sso)
-        mfa_adoption = pct(mfa_count, total_auth)
-        sso_integration = pct(sso_count, total_auth)
+    def _connect(self):
+        if self._con is not None:
+            return self._con
+        try:
+            import duckdb
+        except ImportError:
+            logger.warning("duckdb not installed -- seed provider returns zeros. "
+                           "`pip install cyber360-dashboard[dev]` for local KPIs.")
+            self._con = False  # sentinel: tried and unavailable
+            return self._con
+        self._con = duckdb.connect()
+        return self._con
 
-        privileged = [a for a in seed.accounts if a.is_privileged]
-        priv_count = len(privileged)
-        pam_covered = sum(1 for a in privileged if a.in_pam_vault)
-        pam_coverage = pct(pam_covered, priv_count)
-        orphaned = sum(1 for a in seed.accounts if a.status == "orphaned")
-        dormant_admins = sum(
-            1 for a in privileged
-            if a.last_activity is not None and a.last_activity < NOW - 90 * DAY
-        )
-        recertified = sum(
-            1 for a in seed.accounts
-            if a.last_recertified is not None and a.last_recertified >= NOW - 90 * DAY
-        )
-        recert_pct = pct(recertified, len(seed.accounts))
+    def _gold_table_name(self, domain: DomainConfig) -> str:
+        """Unqualified gold-table name from the domain's source_table (last part)."""
+        return domain.metric_view.source_table.split(".")[-1]
 
-        creates = [c for c in seed.account_changes if c.activity_id == 1 and c.provisioning_hours]
-        avg_prov_hours = sum(c.provisioning_hours for c in creates) / max(len(creates), 1)
-        avg_prov_days = avg_prov_hours / 24
+    def _ensure_registered(self, domain: DomainConfig) -> str | None:
+        """Materialize the domain's synthetic gold rows into a DuckDB table named
+        after its gold table. Returns the table name, or None if unavailable."""
+        con = self._connect()
+        if not con:
+            return None
+        table = self._gold_table_name(domain)
+        if table in self._registered:
+            return table
+        try:
+            _, generate_gold = _load_generator()
+            rows = generate_gold(table)
+        except Exception as exc:  # noqa: BLE001 -- generator optional/missing
+            logger.warning("No synthetic generator for '%s': %s", table, exc)
+            return None
+        if not rows:
+            return None
+        self._create_table(con, table, rows)
+        self._registered.add(table)
+        return table
 
-        return {
-            "seed": seed,
-            "mfa_adoption": mfa_adoption,
-            "sso_integration": sso_integration,
-            "priv_count": priv_count,
-            "pam_coverage": pam_coverage,
-            "orphaned": orphaned,
-            "dormant_admins": dormant_admins,
-            "recert_pct": recert_pct,
-            "avg_prov_days": avg_prov_days,
-        }
+    @staticmethod
+    def _create_table(con, table: str, rows: list[dict]) -> None:
+        """Create + populate a typed DuckDB table from a list of dicts, inferring
+        each column's type from its first non-null value (no pyarrow needed)."""
+        cols = list(rows[0].keys())
 
-    def _identity_values(self, c: dict[str, Any]) -> dict[str, float]:
-        return {
-            "mfa_adoption": c["mfa_adoption"],
-            "privileged_accounts": c["priv_count"],
-            "orphaned_accounts": c["orphaned"],
-            "sso_integration": c["sso_integration"],
-            "pam_vault_coverage": c["pam_coverage"],
-            "avg_provisioning": c["avg_prov_days"],
-            "access_recertification": c["recert_pct"],
-            "dormant_admin_accounts": c["dormant_admins"],
-        }
+        def duck_type(field: str) -> str:
+            for r in rows:
+                v = r.get(field)
+                if v is None:
+                    continue
+                if isinstance(v, bool):
+                    return "BOOLEAN"
+                if isinstance(v, int):
+                    return "BIGINT"
+                if isinstance(v, float):
+                    return "DOUBLE"
+                if isinstance(v, (datetime, date)):
+                    return "TIMESTAMP"
+                return "VARCHAR"
+            return "VARCHAR"
 
-    # ── Vulnerability computation ──
-
-    def _compute_vulnerability(self) -> dict[str, Any]:
-        seed = get_vulnerability_seed()
-
-        def is_open(s: int) -> bool:
-            return s in (1, 2)
-
-        critical_open = sum(1 for f in seed.findings if f.severity_id == 5 and is_open(f.status_id))
-        high_open = sum(1 for f in seed.findings if f.severity_id == 4 and is_open(f.status_id))
-        kev_unpatched = sum(1 for f in seed.findings if f.is_kev and is_open(f.status_id))
-        exceptions = sum(1 for f in seed.findings if f.has_exception and f.status_id == 3)
-
-        resolved = [f for f in seed.findings if f.status_id == 4 and f.resolved_time is not None]
-        within_sla = sum(1 for f in resolved if f.resolved_time <= f.remediation_due)
-        patch_sla = pct(within_sla, len(resolved))
-        mttp = (
-            sum(f.resolved_time - f.first_seen for f in resolved)
-            / max(len(resolved), 1)
-            / DAY
+        coldefs = ", ".join(f'"{c}" {duck_type(c)}' for c in cols)
+        con.execute(f'CREATE TABLE "{table}" ({coldefs})')
+        placeholders = ", ".join("?" for _ in cols)
+        con.executemany(
+            f'INSERT INTO "{table}" VALUES ({placeholders})',
+            [[r.get(c) for c in cols] for r in rows],
         )
 
-        scanned = sum(
-            1 for a in seed.assets
-            if a.last_scanned is not None and a.last_scanned >= NOW - 30 * DAY
-        )
-        scan_coverage = pct(scanned, len(seed.assets))
-        unscanned = sum(
-            1 for a in seed.assets
-            if a.last_scanned is None or a.last_scanned < NOW - 30 * DAY
-        )
-
-        return {
-            "seed": seed,
-            "critical_open": critical_open,
-            "high_open": high_open,
-            "kev_unpatched": kev_unpatched,
-            "exceptions": exceptions,
-            "patch_sla": patch_sla,
-            "mttp": mttp,
-            "scan_coverage": scan_coverage,
-            "unscanned": unscanned,
-        }
-
-    def _vulnerability_values(self, c: dict[str, Any]) -> dict[str, float]:
-        return {
-            "critical_cves_open": c["critical_open"],
-            "high_cves_open": c["high_open"],
-            "kev_unpatched": c["kev_unpatched"],
-            "patch_sla_compliance": c["patch_sla"],
-            "mean_time_to_patch": c["mttp"],
-            "scan_coverage": c["scan_coverage"],
-            "exception_count": c["exceptions"],
-            "assets_unscanned": c["unscanned"],
-        }
-
-    # ── Shared helpers ──
-
-    def _domain_kpis(self, domain_key: str, values: dict[str, float], period: int) -> list[Kpi]:
-        domain = self.config.get_domain(domain_key)
-        if not domain:
+    def _query(self, sql: str) -> list[dict]:
+        con = self._connect()
+        if not con:
             return []
-        return [_build_kpi(m, values.get(m.name, 0), period) for m in domain.metric_view.measures]
+        try:
+            cur = con.execute(sql)
+            names = [d[0] for d in cur.description]
+            return [dict(zip(names, row)) for row in cur.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("seed query failed: %s\n%s", exc, sql)
+            return []
 
-    def _get_values_for_domain(self, domain_key: str) -> dict[str, float]:
-        if domain_key == "identity":
-            return self._identity_values(self._compute_identity())
-        elif domain_key == "vulnerability":
-            return self._vulnerability_values(self._compute_vulnerability())
-        return {}
+    # ── measure evaluation (same portable exprs as the metric view) ──
 
-    # ── Public API ──
+    def _day_expr(self, domain: DomainConfig) -> str | None:
+        for d in domain.metric_view.dimensions:
+            if d.name == "day":
+                return d.expression
+        return None
 
-    async def get_scorecard(self, period: int = 30) -> ScorecardResponse:
-        values_by_domain: dict[str, dict[str, float]] = {}
-        for d in self.config.domains:
-            values_by_domain[d.key] = self._get_values_for_domain(d.key)
+    def _window_where(self, domain: DomainConfig, period: int, *, prior: bool) -> str:
+        day = self._day_expr(domain)
+        if not day:
+            return ""
+        if prior:
+            return (f"{day} >= current_date - INTERVAL {2 * period} DAY "
+                    f"AND {day} < current_date - INTERVAL {period} DAY")
+        return f"{day} >= current_date - INTERVAL {period} DAY"
 
-        # Top-line KPIs
+    def _measure_row(
+        self, domain: DomainConfig, table: str, where: str
+    ) -> dict[str, float]:
+        """One aggregate row of every measure over the (optionally windowed) data."""
+        measures = domain.metric_view.measures
+        selects = [f"({m.expression}) AS \"{m.name}\"" for m in measures if m.expression]
+        if not selects:
+            return {}
+        sql = f'SELECT {", ".join(selects)} FROM "{table}"'
+        if where:
+            sql += f" WHERE {where}"
+        rows = self._query(sql)
+        row = rows[0] if rows else {}
+        return {m.name: _as_float(row.get(m.name)) for m in measures}
+
+    def _rollup_for_domain(
+        self, domain: DomainConfig, period: int
+    ) -> dict[str, tuple[float, float]]:
+        table = self._ensure_registered(domain)
+        names = [m.name for m in domain.metric_view.measures]
+        if not table:
+            return {n: (0.0, 0.0) for n in names}
+        cur = self._measure_row(domain, table, self._window_where(domain, period, prior=False))
+        prev = self._measure_row(domain, table, self._window_where(domain, period, prior=True))
+        return {n: (cur.get(n, 0.0), prev.get(n, 0.0)) for n in names}
+
+    # ── KPI construction (mirrors MetricViewProvider so seed==prod shape) ──
+
+    def _build_kpi(
+        self, domain_key: str, measure_name: str,
+        cur: float | None, prev: float | None, period: int,
+    ) -> Kpi:
+        measure = self.config.get_measure(domain_key, measure_name)
+        raw = float(cur) if cur is not None else 0.0
+        if measure is None:
+            return Kpi(key=measure_name, label=measure_name, value=str(raw), raw=raw,
+                       status="green", caption="", lineage=None)
+
+        has_real_prior = (prev is not None and float(prev) > 0.0
+                          and float(prev) >= 0.5 * abs(raw))
+        if has_real_prior:
+            change = KpiChange(**_format_change(measure, raw - float(prev)))
+        else:
+            change = KpiChange(**build_change(measure, raw, period))
+
+        trend = TrendInfo(direction=measure.trend.direction, label=measure.trend.label) \
+            if measure.trend else None
+        return Kpi(
+            key=measure.name,
+            label=measure.label,
+            value=format_measure_value(measure, raw),
+            raw=raw,
+            status=rag_for_measure(measure, raw),
+            caption=measure.caption,
+            trend=trend,
+            change=change,
+            lineage=KpiLineage(
+                measure=measure.name,
+                expression=measure.expression or "",
+                comment=measure.comment,
+            ),
+        )
+
+    # ── public API (identical surface to MetricViewProvider) ──
+
+    async def get_scorecard(self, period: int = DEFAULT_PERIOD) -> ScorecardResponse:
+        period = normalize_period(period)
+        by_domain = {d.key: self._rollup_for_domain(d, period) for d in self.config.domains}
+
+        def cur_prev(dk: str, m: str) -> tuple[float | None, float | None]:
+            pair = by_domain.get(dk, {}).get(m)
+            return (pair[0], pair[1]) if pair else (None, None)
+
         top_line_kpis: list[Kpi] = []
         for t in self.config.top_line_kpis:
-            measure = self.config.get_measure(t.domain, t.measure)
-            if not measure:
-                continue
-            raw = values_by_domain.get(t.domain, {}).get(t.measure, 0)
-            top_line_kpis.append(_build_kpi(measure, raw, period, t.caption, t.trend))
+            c, p = cur_prev(t.domain, t.measure)
+            kpi = self._build_kpi(t.domain, t.measure, c, p, period)
+            if t.caption:
+                kpi.caption = t.caption
+            if t.trend:
+                kpi.trend = TrendInfo(direction=t.trend.direction, label=t.trend.label)
+            top_line_kpis.append(kpi)
 
-        # Domain health cards
         domains: list[DomainHealth] = []
         for domain in self.config.domains:
-            values = values_by_domain.get(domain.key, {})
-            kpis = self._domain_kpis(domain.key, values, period)
-
+            kpis = [self._build_kpi(domain.key, m.name, *cur_prev(domain.key, m.name), period)
+                    for m in domain.metric_view.measures]
             compliance = ComplianceCounts(green=0, amber=0, red=0, total=len(kpis))
             for k in kpis:
                 if k.status == "green":
@@ -585,7 +272,7 @@ class SeedProvider:
                 else:
                     compliance.red += 1
 
-            score_vals = [values.get(n, 0) for n in domain.health.score_measures]
+            score_vals = [cur_prev(domain.key, n)[0] or 0.0 for n in domain.health.score_measures]
             score = round(sum(score_vals) / max(len(score_vals), 1))
 
             highlights: list[DomainHealthHighlight] = []
@@ -593,8 +280,7 @@ class SeedProvider:
                 kpi = next((k for k in kpis if k.key == name), None)
                 if kpi:
                     highlights.append(DomainHealthHighlight(
-                        label=kpi.label, value=kpi.value, status=kpi.status
-                    ))
+                        label=kpi.label, value=kpi.value, status=kpi.status))
 
             domains.append(DomainHealth(
                 key=domain.key,
@@ -611,217 +297,104 @@ class SeedProvider:
             domains=domains,
         )
 
-    async def get_domain_metrics(self, domain_key: str, period: int = 30) -> DomainMetricsResponse:
+    async def get_domain_metrics(
+        self, domain_key: str, period: int = DEFAULT_PERIOD
+    ) -> DomainMetricsResponse:
         domain = self.config.get_domain(domain_key)
         if not domain:
             raise ValueError(f"Unknown domain: {domain_key}")
+        period = normalize_period(period)
 
-        if domain_key == "identity":
-            return self._get_identity_metrics(period)
-        elif domain_key == "vulnerability":
-            return self._get_vulnerability_metrics(period)
-        raise ValueError(f"No seed data for domain: {domain_key}")
+        rollup = self._rollup_for_domain(domain, period)
+        kpis = [self._build_kpi(domain_key, m.name, rollup[m.name][0], rollup[m.name][1], period)
+                for m in domain.metric_view.measures]
+        series = self._trend_series(domain, period)
 
-    def _get_identity_metrics(self, period: int) -> DomainMetricsResponse:
-        c = self._compute_identity()
-        kpis = self._domain_kpis("identity", self._identity_values(c), period)
-        seed: IdentitySeed = c["seed"]
-
-        # Trend: MFA adoption + SSO by day
-        by_day: dict[str, dict[str, int]] = {}
-        for e in seed.auth_events:
-            k = day_key(e.time)
-            if k not in by_day:
-                by_day[k] = {"mfa": 0, "sso": 0, "total": 0}
-            by_day[k]["total"] += 1
-            if e.is_mfa:
-                by_day[k]["mfa"] += 1
-            if e.via_sso:
-                by_day[k]["sso"] += 1
-
-        adoption_trend = sorted(
-            [
-                TrendPoint(
-                    day=date,
-                    values={
-                        "mfa": round(pct(v["mfa"], v["total"]) * 10) / 10,
-                        "sso": round(pct(v["sso"], v["total"]) * 10) / 10,
-                    },
-                )
-                for date, v in by_day.items()
-            ],
-            key=lambda t: t.day,
-        )
-
-        # Breakdown: auth by protocol
-        proto_map: dict[str, int] = {}
-        for e in seed.auth_events:
-            proto_map[e.auth_protocol] = proto_map.get(e.auth_protocol, 0) + 1
-        auth_by_protocol = [BreakdownItem(name=k, value=v) for k, v in proto_map.items()]
-
-        # Breakdown: accounts by status
-        status_map: dict[str, int] = {}
-        for a in seed.accounts:
-            status_map[a.status] = status_map.get(a.status, 0) + 1
-        accounts_by_status = [BreakdownItem(name=k, value=v) for k, v in status_map.items()]
-
-        domain = self.config.get_domain("identity")
         return DomainMetricsResponse(
-            key="identity",
-            label=domain.label if domain else "Identity & Access Management",
+            key=domain_key,
+            label=domain.label,
             status=rollup_status([k.status for k in kpis]),
             kpis=kpis,
-            trends={"adoption": adoption_trend},
-            breakdowns={"authByProtocol": auth_by_protocol, "accountsByStatus": accounts_by_status},
+            trends={"daily": series},
+            breakdowns={},
         )
 
-    def _get_vulnerability_metrics(self, period: int) -> DomainMetricsResponse:
-        c = self._compute_vulnerability()
-        kpis = self._domain_kpis("vulnerability", self._vulnerability_values(c), period)
-        seed: VulnerabilitySeed = c["seed"]
-
-        # Trend: findings by severity by day
-        by_day: dict[str, dict[str, int]] = {}
-        for f in seed.findings:
-            k = day_key(f.first_seen)
-            if k not in by_day:
-                by_day[k] = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-            if f.severity_id == 5:
-                by_day[k]["critical"] += 1
-            elif f.severity_id == 4:
-                by_day[k]["high"] += 1
-            elif f.severity_id == 3:
-                by_day[k]["medium"] += 1
-            else:
-                by_day[k]["low"] += 1
-
-        intake_trend = sorted(
-            [TrendPoint(day=date, values=v) for date, v in by_day.items()],
-            key=lambda t: t.day,
-        )[-30:]
-
-        # Breakdown: open by severity
-        sev_map = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
-        for f in seed.findings:
-            if f.status_id not in (1, 2):
-                continue
-            if f.severity_id == 5:
-                sev_map["Critical"] += 1
-            elif f.severity_id == 4:
-                sev_map["High"] += 1
-            elif f.severity_id == 3:
-                sev_map["Medium"] += 1
-            else:
-                sev_map["Low"] += 1
-        open_by_severity = [BreakdownItem(name=k, value=v) for k, v in sev_map.items()]
-
-        # Breakdown: by asset type
-        type_map: dict[str, int] = {}
-        for f in seed.findings:
-            type_map[f.device_type] = type_map.get(f.device_type, 0) + 1
-        by_asset_type = [BreakdownItem(name=k, value=v) for k, v in type_map.items()]
-
-        domain = self.config.get_domain("vulnerability")
-        return DomainMetricsResponse(
-            key="vulnerability",
-            label=domain.label if domain else "Vulnerability Management",
-            status=rollup_status([k.status for k in kpis]),
-            kpis=kpis,
-            trends={"intake": intake_trend},
-            breakdowns={"openBySeverity": open_by_severity, "findingsByAssetType": by_asset_type},
+    def _trend_series(self, domain: DomainConfig, period: int) -> list[TrendPoint]:
+        table = self._ensure_registered(domain)
+        day = self._day_expr(domain)
+        measures = domain.metric_view.measures
+        if not table or not day or not measures:
+            return []
+        selects = [f"({m.expression}) AS \"{m.name}\"" for m in measures if m.expression]
+        sql = (
+            f'SELECT {day} AS day, {", ".join(selects)} FROM "{table}" '
+            f"WHERE {self._window_where(domain, period, prior=False)} "
+            f"GROUP BY {day} ORDER BY day"
         )
+        series: list[TrendPoint] = []
+        for r in self._query(sql):
+            series.append(TrendPoint(
+                day=str(r.get("day")),
+                values={m.name: round(_as_float(r.get(m.name)), 2) for m in measures},
+            ))
+        return series
 
-    async def get_accounts(self, query: AccountsQuery) -> Paginated[AccountRow]:
-        seed = get_identity_seed()
-        rows = seed.accounts
+    async def get_detail_rows(
+        self, domain_key: str, query: DetailQuery
+    ) -> DetailRowsResponse:
+        domain = self.config.get_domain(domain_key)
+        if not domain:
+            raise ValueError(f"Unknown domain: {domain_key}")
+        table_cfg = domain.detail_table
+        table = self._ensure_registered(domain)
+        if not table_cfg.columns or not table:
+            return DetailRowsResponse(columns=[], rows=[], total=0,
+                                      page=query.page, page_size=query.page_size)
 
-        if query.status:
-            rows = [a for a in rows if a.status == query.status]
-        if query.privileged is not None:
-            rows = [a for a in rows if a.is_privileged == query.privileged]
+        columns = [DetailColumn(field=c.field, label=c.label or c.field, format=c.format)
+                   for c in table_cfg.columns]
+        col_list = ", ".join(f'"{c.field}"' for c in table_cfg.columns)
+        where = ""
+        if query.filter_key:
+            where = next((f.where for f in table_cfg.filters if f.key == query.filter_key), "")
+        where_sql = f" WHERE {where}" if where else ""
+        order_sql = f" ORDER BY {table_cfg.order_by}" if table_cfg.order_by else ""
 
-        # Sort: most interesting first
-        rank = {"orphaned": 0, "dormant": 1, "disabled": 2, "active": 3}
-        rows = sorted(rows, key=lambda a: rank.get(a.status, 3))
+        page = max(query.page, 1)
+        page_size = query.page_size or table_cfg.page_size
+        offset = (page - 1) * page_size
 
-        page = query.page
-        ps = query.page_size
-        start = (page - 1) * ps
-        page_rows = rows[start:start + ps]
-
-        return Paginated(
-            rows=[
-                AccountRow(
-                    uid=a.uid,
-                    name=a.name,
-                    org_unit=a.org_unit,
-                    privileged=a.is_privileged,
-                    sso_enrolled=a.sso_enrolled,
-                    in_pam_vault=a.in_pam_vault,
-                    last_activity=(
-                        datetime.fromtimestamp(a.last_activity / 1000, tz=timezone.utc).isoformat()
-                        if a.last_activity else None
-                    ),
-                    status=a.status,
-                )
-                for a in page_rows
-            ],
-            total=len(rows),
+        total_rows = self._query(f'SELECT COUNT(*) AS n FROM "{table}"{where_sql}')
+        total = int(_as_float(total_rows[0].get("n"))) if total_rows else 0
+        data_rows = self._query(
+            f'SELECT {col_list} FROM "{table}"{where_sql}{order_sql} '
+            f"LIMIT {page_size} OFFSET {offset}"
+        )
+        return DetailRowsResponse(
+            columns=columns,
+            rows=[{c.field: _json_safe(r.get(c.field)) for c in table_cfg.columns}
+                  for r in data_rows],
+            total=total,
             page=page,
-            page_size=ps,
-        )
-
-    async def get_findings(self, query: FindingsQuery) -> Paginated[FindingRow]:
-        seed = get_vulnerability_seed()
-
-        sev_name = {5: "Critical", 4: "High", 3: "Medium", 2: "Low"}
-        status_name = {1: "New", 2: "In Progress", 3: "Exception", 4: "Resolved"}
-
-        # Filter to open findings only
-        rows = [f for f in seed.findings if f.status_id in (1, 2)]
-
-        if query.severity:
-            rows = [f for f in rows if sev_name.get(f.severity_id) == query.severity]
-        if query.kev_only:
-            rows = [f for f in rows if f.is_kev]
-        if query.sla_breached_only:
-            rows = [f for f in rows if NOW > f.remediation_due]
-
-        # Sort: KEV first, then highest CVSS
-        rows = sorted(rows, key=lambda f: (not f.is_kev, -f.cvss_score))
-
-        page = query.page
-        ps = query.page_size
-        start = (page - 1) * ps
-        page_rows = rows[start:start + ps]
-
-        return Paginated(
-            rows=[
-                FindingRow(
-                    finding_uid=f.finding_uid,
-                    cve=f.cve_uid,
-                    cvss=f.cvss_score,
-                    severity=sev_name.get(f.severity_id, "Low"),
-                    is_kev=f.is_kev,
-                    host=f.device_hostname,
-                    asset_type=f.device_type,
-                    first_seen=datetime.fromtimestamp(f.first_seen / 1000, tz=timezone.utc).isoformat(),
-                    age_days=int((NOW - f.first_seen) / DAY),
-                    sla_due=datetime.fromtimestamp(f.remediation_due / 1000, tz=timezone.utc).isoformat(),
-                    sla_breached=NOW > f.remediation_due,
-                    fix_available=f.is_fix_available,
-                    status=status_name.get(f.status_id, "New"),
-                )
-                for f in page_rows
-            ],
-            total=len(rows),
-            page=page,
-            page_size=ps,
+            page_size=page_size,
         )
 
     async def get_incidents(self) -> IncidentsResponse:
-        return IncidentsResponse(
-            active=INCIDENTS,
-            open_counts=INCIDENT_OPEN_COUNTS,
-            mttr=INCIDENT_MTTR,
-        )
+        # Config-driven incidents not yet wired; SOC view is off by default.
+        return IncidentsResponse.empty()
+
+
+def _as_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce DuckDB scalars (datetime/date) to JSON-serializable values."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
