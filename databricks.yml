@@ -441,6 +441,17 @@ targets:
       # Read the real federated source instead of a synthetic gold table.
       load_synthetic_data: false
       phishing_source_table: conn_cyberarch.dbo.phishing_detail
+      # REQUIRED before `make deploy edp_dev` will work -- the inherited defaults
+      # are the sandbox's `cyber360` catalog / empty warehouse, which do NOT exist
+      # here, so leaving these unset fails the schema resource + the sql_tasks:
+      #   catalog      -> a UC catalog that EXISTS on EDP DEV (the bundle creates
+      #                   the `posture` schema INSIDE it, not the catalog itself).
+      #   warehouse_id -> a serverless SQL warehouse id (the metric-view sql_tasks
+      #                   AND the app's KPI reads both need it).
+      # Discover them after `databricks auth login` to EDP DEV:
+      #   databricks catalogs list -p edp_dev ; databricks warehouses list -p edp_dev
+      # catalog: "<edp_dev_catalog>"
+      # warehouse_id: "<edp_dev_serverless_warehouse_id>"
 
   # Prod: the released application, sourced from `main`. The pipeline must NOT be
   # in development mode here (mode: production rejects it), so pin the flag false.
