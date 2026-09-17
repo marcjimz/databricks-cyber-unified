@@ -66,7 +66,7 @@ PFLAG := $(if $(PROFILE),-p $(PROFILE),)
 
 .PHONY: help install install-backend install-frontend build build-frontend \
         dev lint lint-backend lint-frontend clean generate-data \
-        guard-target setup deploy validate data-plane app $(ENVS)
+        guard-target setup deploy release validate data-plane app $(ENVS)
 
 # ──────────────────────────────────────────────
 # Development (local, no workspace)
@@ -81,8 +81,9 @@ help: ## Show this help
 	@echo "    make lint               ruff + tsc/eslint"
 	@echo "    make generate-data      (re)generate the bundled synthetic CSVs into data/"
 	@echo "  Deploy (positional env: sandbox | edp_dev | prod):"
-	@echo "    make deploy <env>       validate -> deploy -> data-plane job -> run app"
+	@echo "    make deploy <env>       validate -> deploy -> data-plane job -> run app (NO frontend build)"
 	@echo "    make setup <env>        FIRST-TIME: deploy x2 -> data-plane -> app"
+	@echo "    make release <env>      build the SPA THEN deploy (use when the UI changed; needs npm)"
 	@echo "    make validate <env>     bundle validate only"
 	@echo "    make data-plane <env>   run $(DATA_PLANE_JOB) (gold + phishing metric view)"
 	@echo "    make app <env>          deploy + run the app ($(APP_KEY))"
@@ -135,7 +136,11 @@ guard-target:
 	  echo "error: pick ONE env, got: $(ENV)"; exit 2; fi
 
 # Full deploy: validate -> deploy -> data-plane (gold + metric view) -> run app.
-deploy: guard-target build
+# NOTE: deploy does NOT build the frontend. The built SPA (app/frontend/dist) is
+# COMMITTED and `bundle deploy` ships it as-is, so deploy needs no npm/node -- it
+# runs from a Databricks workspace terminal or CI unchanged. Rebuild the SPA
+# explicitly with `make build` (or `make release <env>`) when the UI changed.
+deploy: guard-target
 	databricks bundle validate -t $(TARGET) $(PFLAG)
 	databricks bundle deploy   -t $(TARGET) $(PFLAG)
 	databricks bundle run      -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
@@ -143,14 +148,19 @@ deploy: guard-target build
 
 # FIRST-TIME bootstrap for a fresh workspace: deploy twice (the 1st pass creates
 # the Lakebase project/app; the 2nd settles resources that depend on them), then
-# run the data-plane job + app.
-setup: guard-target build
+# run the data-plane job + app. Like `deploy`, it does NOT build the frontend.
+setup: guard-target
 	databricks bundle validate -t $(TARGET) $(PFLAG)
 	databricks bundle deploy   -t $(TARGET) $(PFLAG) || true   # 1st pass: expect partial on a fresh workspace
 	databricks bundle deploy   -t $(TARGET) $(PFLAG)           # 2nd pass: must succeed
 	databricks bundle run      -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
 	databricks bundle run      -t $(TARGET) $(PFLAG) $(APP_KEY)
 	@echo "setup complete for $(TARGET)."
+
+# Rebuild the SPA THEN deploy -- use from a machine with npm/node when the UI
+# changed and dist/ needs regenerating. Keeps `deploy` itself build-free.
+release: build
+	$(MAKE) deploy $(ENV)
 
 validate: guard-target ## bundle validate only
 	databricks bundle validate -t $(TARGET) $(PFLAG)
