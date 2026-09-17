@@ -39,23 +39,20 @@ bundle:
 # (DABs cannot create groups).
 #   manage_group -> app/job/pipeline CAN_MANAGE
 #   user_group   -> app CAN_USE, job/pipeline CAN_VIEW
-# This top-level `permissions:` block propagates to all three workspace resources
-# automatically; the app adds a CAN_USE grant for user_group (a level the
-# top-level block can't express).
+# These are declared PER-RESOURCE on the app/job/pipeline blocks (see the NOTE
+# below), so each group gets exactly one grant per resource.
 #
 # DATA-LAYER (Unity Catalog) grants are NOT managed here: UC grant principals
 # must be ACCOUNT-level groups (these are workspace groups), so granting the
 # groups USE_CATALOG / USE_SCHEMA / SELECT on the catalog+schema (so members can
 # query the metric views) is a one-time team/metastore-admin step. The exact
 # grants are documented in README.md "Access control".
-permissions:
-  # The deploying identity keeps CAN_MANAGE regardless of who runs the deploy.
-  - level: CAN_MANAGE
-    user_name: ${workspace.current_user.userName}
-  - level: CAN_MANAGE
-    group_name: ${var.manage_group}
-  - level: CAN_VIEW
-    group_name: ${var.user_group}
+# NOTE: permissions are declared PER-RESOURCE (on the app, job, and pipeline
+# blocks below), not in a top-level `permissions:` block -- bluebird's pattern. A
+# top-level block propagates to every resource AND stacks with each resource's own
+# block, so a group named in both gets assigned twice ("already has permissions
+# set" warnings) -- doubly so when manage_group == user_group. Per-resource
+# permissions give each group exactly one grant per resource and no warnings.
 
 variables:
   manage_group:
@@ -270,6 +267,12 @@ resources:
             include: pipelines/cyber360_pipeline.py
         - glob:
             include: pipelines/lib/**
+      # Per-resource permissions: manage_group manages, user_group can view.
+      permissions:
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
+        - level: CAN_VIEW
+          group_name: ${var.user_group}
 
   # ── Orchestration job: pipeline (gold + aggregates) -> UC Metric Views ──
   # `CREATE ... VIEW WITH METRICS` is UC DDL that a declarative pipeline cannot
@@ -317,6 +320,12 @@ resources:
             parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
+      # Per-resource permissions: manage_group manages, user_group can view.
+      permissions:
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
+        - level: CAN_VIEW
+          group_name: ${var.user_group}
 
   # ── The dashboard app (FastAPI + built React SPA) ──
   apps:
@@ -397,11 +406,15 @@ resources:
           #   - name: GENIE_PHISHING_EMBED_URL
           #     value: ${var.genie_phishing_embed_url}
 
-      # The top-level `permissions:` block already gives the deployer +
-      # manage_group CAN_MANAGE. The app's consumer level is CAN_USE (open + run
-      # the app) -- a level the top-level block can't express -- so user_group is
-      # granted CAN_USE here (overrides its top-level CAN_VIEW for this resource).
+      # Per-resource permissions (no top-level block): deployer + manage_group
+      # CAN_MANAGE, user_group CAN_USE (open + run the app). If manage_group ==
+      # user_group (e.g. edp_dev's single QA group), the CLI de-dupes to the
+      # highest level (CAN_MANAGE) with no warning.
       permissions:
+        - level: CAN_MANAGE
+          user_name: ${workspace.current_user.userName}
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
         - level: CAN_USE
           group_name: ${var.user_group}
 
@@ -457,7 +470,9 @@ targets:
       # so a future _tst/_prd on the same workspace won't collide. -dev here.
       env_suffix: "-dev"
       lakebase_project: cyber360-lakebase-dev
-      lakebase_database: cyber360_dev
+      # Hyphen, not underscore: lakebase_database feeds database_id, which must
+      # match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ (no underscores).
+      lakebase_database: cyber360-dev
       # Read the real federated source instead of a synthetic gold table.
       load_synthetic_data: false
       phishing_source_table: conn_cyberarch.dbo.phishing_detail
@@ -471,9 +486,11 @@ targets:
       # Serverless SQL warehouse (id from the workspace warehouse URL). Serves the
       # metric-view sql_tasks AND the app's per-user KPI reads.
       warehouse_id: "67db57985bbae271"
-      # QA group drives workspace access: CAN_MANAGE on app/job/pipeline (via the
-      # top-level permissions block) + CAN_USE on the app. Must PRE-EXIST (DABs
-      # cannot create groups). Data-layer UC grants remain a one-time step (README).
+      # QA group drives workspace access via the per-resource permission blocks:
+      # CAN_MANAGE on app/job/pipeline + CAN_USE on the app. manage_group ==
+      # user_group here, so the CLI de-dupes to CAN_MANAGE (no "already set"
+      # warning). Must PRE-EXIST (DABs cannot create groups). Data-layer UC grants
+      # remain a one-time metastore-admin step (README "Access control").
       manage_group: DPG_CYBERSECURITY_QA
       user_group: DPG_CYBERSECURITY_QA
 
@@ -487,6 +504,6 @@ targets:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
       pipeline_development: false
-    # Permissions are group-driven and identical across targets (top-level
-    # `permissions:` + the app block reference ${var.manage_group} /
-    # ${var.user_group}), so prod needs no permission override here.
+    # Permissions are group-driven and identical across targets (the per-resource
+    # blocks reference ${var.manage_group} / ${var.user_group}), so prod needs no
+    # permission override here.
