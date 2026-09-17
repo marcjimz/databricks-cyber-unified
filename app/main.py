@@ -50,9 +50,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Cyber360 Dashboard",
+    title="CyberUnified",
     description="Unified Cybersecurity Posture Dashboard",
-    version="0.1.0",
+    version="0.0.1",
     lifespan=lifespan,
 )
 

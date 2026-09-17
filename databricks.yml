@@ -29,7 +29,7 @@
 # ============================================================================
 
 bundle:
-  name: cyber360-dashboard
+  name: cyber-unified
 
 # ── Group-based access control (manage the GROUP, not individual users) ──
 # Two bring-your-own Databricks groups drive WORKSPACE access. Add/remove a user
@@ -79,10 +79,10 @@ variables:
     description: "Per-env resource-name suffix (e.g. -dev / -tst / -prd). Empty = none."
     default: ""
   catalog:
-    description: "Unity Catalog catalog for Cyber360 gold data, metric views and aggregates"
+    description: "Unity Catalog catalog for CyberUnified gold data, metric views and aggregates"
     default: "cyber360"
   schema:
-    description: "Unity Catalog schema for Cyber360 tables, metric views and aggregates"
+    description: "Unity Catalog schema for CyberUnified tables, metric views and aggregates"
     default: "posture"
   warehouse_id:
     description: "SQL Warehouse ID -- used by Genie interactive drawer ONLY, never KPI reads"
@@ -174,7 +174,7 @@ resources:
   postgres_projects:
     cyber360_lakebase:
       project_id: ${var.lakebase_project}
-      display_name: "Cyber360 Lakebase"
+      display_name: "CyberUnified Lakebase"
       default_endpoint_settings:
         autoscaling_limit_min_cu: ${var.lakebase_min_cu}
         autoscaling_limit_max_cu: ${var.lakebase_max_cu}
@@ -246,7 +246,7 @@ resources:
   # (KPI aggregation is now done by the metric views + materialization, not here.)
   pipelines:
     cyber360_pipeline:
-      name: "[${bundle.target}] cyber360-gold"
+      name: "[${bundle.target}] cyber-unified-gold"
       catalog: ${var.catalog}
       schema: ${var.schema}
       serverless: true
@@ -285,7 +285,7 @@ resources:
   #   databricks bundle run cyber360_data_plane -t dev
   jobs:
     cyber360_data_plane:
-      name: "[${bundle.target}] cyber360-data-plane"
+      name: "[${bundle.target}] cyber-unified-data-plane"
       tasks:
         - task_key: build_gold
           pipeline_task:
@@ -331,9 +331,9 @@ resources:
   apps:
     cyber360_app:
       # env_suffix keeps dev/tst/prd app names distinct in a shared workspace
-      # (e.g. cyber360-dashboard-dev). Empty on the sandbox -> bare name.
-      name: "cyber360-dashboard${var.env_suffix}"
-      description: "Cyber360 Unified Cybersecurity Posture Dashboard"
+      # (e.g. cyber-unified-dev). Empty on the sandbox -> bare name.
+      name: "cyber-unified${var.env_suffix}"
+      description: "CyberUnified Cybersecurity Posture Dashboard"
       source_code_path: ./app
 
       # User authorization (on-behalf-of-user). Declaring `user_api_scopes` makes
