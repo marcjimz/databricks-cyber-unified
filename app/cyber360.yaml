@@ -105,10 +105,13 @@ domains:
         - count
 
     metric_view:
-      name: mv_phishing
-      # Synthetic sandbox gold table. The edp_dev target points the metric
-      # view's :source_table param at conn_cyberarch.dbo.phishing_detail; this
-      # field is the app-side lineage/label + the pipeline's gold-table name.
+      name: phishing_detail_metric_view
+      # The synthetic gold table (unqualified last segment `phishing_detail` is the
+      # pipeline's gold-table name when load_synthetic_data=true). The app's /rows
+      # drill-down does NOT read this directly -- it reads the `phishing_source`
+      # pass-through view in the deploy catalog/schema (see MetricViewProvider),
+      # which exists on every target and resolves to the right underlying data
+      # (synthetic gold on sandbox, conn_cyberarch.dbo.phishing_detail on edp_dev).
       source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.phishing_detail"
       comment: >-
         Phishing & email-security measures over simulated-phishing campaign

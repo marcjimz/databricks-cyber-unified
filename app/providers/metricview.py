@@ -326,9 +326,15 @@ class MetricViewProvider:
         )
 
     def _resolve_source(self, domain) -> str:
-        """The metric view's source table FQN. Config carries the fully-qualified
-        source_table (env placeholders already resolved at load)."""
-        return domain.metric_view.source_table
+        """The relation the drill-down SELECTs from: the `phishing_source`
+        pass-through view in the deploy catalog/schema. That view is created next
+        to the metric view (phishing_source.sql) as `SELECT * FROM :source_table`,
+        so it exists on EVERY target and resolves to the right underlying data --
+        synthetic gold on sandbox, the real conn_cyberarch.dbo.phishing_detail on
+        edp_dev -- without the app needing to know the per-target source location.
+        Falls back to the configured source_table if no source view is named."""
+        source_view = getattr(domain.metric_view, "source_view", "") or "phishing_source"
+        return f"{self._catalog}.{self._schema}.{source_view}"
 
     @staticmethod
     def _filter_where(table, filter_key: str | None) -> str:

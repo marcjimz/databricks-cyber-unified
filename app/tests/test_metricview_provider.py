@@ -53,14 +53,16 @@ def _provider(config, sql_client) -> MetricViewProvider:
 
 
 def test_measure_query_targets_metric_view_and_window(config):
-    fake = FakeSQLClient([("mv_phishing", [{"phishing_click_rate": 11.0}])])
+    fake = FakeSQLClient([("phishing_detail_metric_view", [{"phishing_click_rate": 11.0}])])
     p = _provider(config, fake)
 
-    asyncio.run(p._measure_row("mv_phishing", ["phishing_click_rate"], p._window_where(30, prior=False)))
+    asyncio.run(p._measure_row(
+        "phishing_detail_metric_view", ["phishing_click_rate"],
+        p._window_where(30, prior=False)))
 
     q = fake.queries[-1]
     assert "MEASURE(`phishing_click_rate`)" in q
-    assert "cat.sch.mv_phishing" in q
+    assert "cat.sch.phishing_detail_metric_view" in q
     assert "current_date() - INTERVAL 30 DAY" in q
 
 
@@ -113,12 +115,15 @@ def test_detail_rows_query_is_config_driven(config):
     rows_q = next(q for q in fake.queries if q.startswith("SELECT `eventtimestamp`"))
     assert "eventtype = 'Email Click'" in rows_q
     assert "LIMIT 5 OFFSET 0" in rows_q
+    # drill-down reads the phishing_source pass-through view (right data on every
+    # target), NOT the raw per-target source_table.
+    assert "cat.sch.phishing_source" in rows_q
 
 
 def test_scorecard_builds_from_measure_rows(config):
     # Return the same measure row for any current/prior window query.
     row = {m.name: 50.0 for d in config.domains for m in d.metric_view.measures}
-    fake = FakeSQLClient([("FROM cat.sch.mv_", [row])])
+    fake = FakeSQLClient([("FROM cat.sch.phishing_detail_metric_view", [row])])
     p = _provider(config, fake)
 
     sc = asyncio.run(p.get_scorecard(30))

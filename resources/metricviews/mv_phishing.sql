@@ -26,7 +26,7 @@
 USE CATALOG IDENTIFIER(:catalog);
 USE SCHEMA IDENTIFIER(:schema);
 
-CREATE OR REPLACE VIEW mv_phishing WITH METRICS LANGUAGE YAML AS $$
+CREATE OR REPLACE VIEW phishing_detail_metric_view WITH METRICS LANGUAGE YAML AS $$
 version: 1.1
 comment: "Phishing and email-security posture measures over simulated-phishing campaign events (click, report, and no-action outcomes)."
 source: phishing_source

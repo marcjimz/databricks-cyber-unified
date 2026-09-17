@@ -437,21 +437,30 @@ targets:
     mode: development
     workspace:
       host: https://adb-5918574733311837.17.azuredatabricks.net
+    # `mode: development` normally prefixes every resource with `[dev <user>]`
+    # (e.g. schema `cybersecurity` -> `dev_<user>_cybersecurity`). This is a shared
+    # QA workspace with fixed object names, so disable the prefix -- the metric
+    # view then lands at exactly innovation.cybersecurity.phishing_detail_metric_view.
+    presets:
+      name_prefix: ""
     variables:
       # Read the real federated source instead of a synthetic gold table.
       load_synthetic_data: false
       phishing_source_table: conn_cyberarch.dbo.phishing_detail
-      # REQUIRED before `make deploy edp_dev` will work -- the inherited defaults
-      # are the sandbox's `cyber360` catalog / empty warehouse, which do NOT exist
-      # here, so leaving these unset fails the schema resource + the sql_tasks:
-      #   catalog      -> a UC catalog that EXISTS on EDP DEV (the bundle creates
-      #                   the `posture` schema INSIDE it, not the catalog itself).
-      #   warehouse_id -> a serverless SQL warehouse id (the metric-view sql_tasks
-      #                   AND the app's KPI reads both need it).
-      # Discover them after `databricks auth login` to EDP DEV:
-      #   databricks catalogs list -p edp_dev ; databricks warehouses list -p edp_dev
-      # catalog: "<edp_dev_catalog>"
-      # warehouse_id: "<edp_dev_serverless_warehouse_id>"
+      # Deploy INTO the customer's cybersecurity schema. catalog=innovation,
+      # schema=cybersecurity; the metric view is named phishing_detail_metric_view
+      # (metric_view.name in cyber360.yaml), so the app queries
+      # innovation.cybersecurity.phishing_detail_metric_view via MEASURE().
+      catalog: innovation
+      schema: cybersecurity
+      # Serverless SQL warehouse (id from the workspace warehouse URL). Serves the
+      # metric-view sql_tasks AND the app's per-user KPI reads.
+      warehouse_id: "67db57985bbae271"
+      # QA group drives workspace access: CAN_MANAGE on app/job/pipeline (via the
+      # top-level permissions block) + CAN_USE on the app. Must PRE-EXIST (DABs
+      # cannot create groups). Data-layer UC grants remain a one-time step (README).
+      manage_group: DPG_CYBERSECURITY_QA
+      user_group: DPG_CYBERSECURITY_QA
 
   # Prod: the released application, sourced from `main`. The pipeline must NOT be
   # in development mode here (mode: production rejects it), so pin the flag false.
