@@ -48,20 +48,17 @@ ifeq ($(ENV),sandbox)
   TARGET := databricks_sandbox
 endif
 
-# Optional CLI profile (avoids "multiple profiles matched" when several profiles
-# share a host, and pins the right creds when the bundle's default target host
-# differs from the one you're deploying). Defaults per target; override with
-# `make deploy edp_dev PROFILE=...`.
-#   databricks_sandbox -> the real-time-mode FEVM profile.
-#   edp_dev            -> the EDP DEV profile (create it once with:
-#     databricks auth login --host https://adb-5918574733311837.17.azuredatabricks.net --profile edp_dev)
+# Auth resolves from the ENVIRONMENT by default (like bluebird): ambient auth when
+# deploying from inside a Databricks workspace, or your active CLI profile / the
+# DATABRICKS_* env vars on a laptop. No profile is hardcoded -- forcing `-p <name>`
+# breaks the in-workspace path (there is no ~/.databrickscfg profile there).
+#
+# Only pass a profile when you actually need one -- e.g. a laptop where several
+# profiles share a host and the CLI can't disambiguate ("multiple profiles
+# matched"). Do it per-invocation:
+#   make deploy edp_dev PROFILE=edp_dev
+#   make deploy sandbox PROFILE=fe-vm-real-time-mode-demo
 PROFILE ?=
-ifeq ($(TARGET),databricks_sandbox)
-  PROFILE := fe-vm-real-time-mode-demo
-endif
-ifeq ($(TARGET),edp_dev)
-  PROFILE := edp_dev
-endif
 PFLAG := $(if $(PROFILE),-p $(PROFILE),)
 
 .PHONY: help install install-backend install-frontend build build-frontend \
