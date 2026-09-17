@@ -59,7 +59,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           </p>
           <p className="text-sm text-danger/90">{error}</p>
           <p className="mt-3 text-xs text-muted-foreground">
-            Ensure the Cyber360 API is running and reachable at{" "}
+            Ensure the CyberUnified API is running and reachable at{" "}
             <code className="font-mono">/api/config</code>.
           </p>
         </div>
