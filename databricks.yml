@@ -419,7 +419,12 @@ targets:
   # pins the deploy to the FEVM sandbox.
   databricks_sandbox:
     default: true
-    mode: development
+    # No `mode: development` (bluebird pattern) -- avoid dev-mode name-mangling so
+    # object names are stable/predictable. The top-level per-user `root_path`
+    # already isolates deploy state between developers on the shared FEVM.
+    # (NOTE: this renames the schema from the old dev-prefixed
+    # `dev_<user>_posture` to plain `posture` on the next deploy -- nothing
+    # hardcodes the old name, and the app resolves the schema from CYBER360_SCHEMA.)
     workspace:
       host: https://fevm-real-time-mode-demo.cloud.databricks.com
     variables:
@@ -434,15 +439,14 @@ targets:
   # No synthetic load -- the metric view reads conn_cyberarch.dbo.phishing_detail
   # directly (bring-your-own-data). Same workspace bluebird's `dev` target uses.
   edp_dev:
-    mode: development
+    # No `mode: development` (bluebird pattern): dev-mode name-mangling would
+    # rewrite the schema (cybersecurity -> dev_<user>_cybersecurity) and prefix the
+    # app/job/pipeline. This is a shared QA workspace with FIXED object names, so we
+    # deploy bare -- the metric view lands at exactly
+    # innovation.cybersecurity.phishing_detail_metric_view. The per-user bundle
+    # root_path (top-level `workspace.root_path`) still isolates deploy state.
     workspace:
       host: https://adb-5918574733311837.17.azuredatabricks.net
-    # `mode: development` normally prefixes every resource with `[dev <user>]`
-    # (e.g. schema `cybersecurity` -> `dev_<user>_cybersecurity`). This is a shared
-    # QA workspace with fixed object names, so disable the prefix -- the metric
-    # view then lands at exactly innovation.cybersecurity.phishing_detail_metric_view.
-    presets:
-      name_prefix: ""
     variables:
       # Read the real federated source instead of a synthetic gold table.
       load_synthetic_data: false
