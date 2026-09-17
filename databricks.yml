@@ -72,6 +72,15 @@ variables:
       grant this group USE_CATALOG + USE_SCHEMA + SELECT on the catalog/schema
       out-of-band (see README "Access control"). Bring-your-own group.
     default: "DPG_CYBER360_USER"
+  # Per-environment suffix so dev/tst/prd deploys coexist in a shared workspace
+  # without name collisions (bluebird pattern). Applied to the workspace-level
+  # RESOURCE names -- app + Lakebase project/database. Each target sets it
+  # (_dev / _tst / _prd); empty by default (sandbox uses a bare name).
+  # NOTE: this does NOT suffix the UC catalog/schema -- those are bring-your-own,
+  # fixed, and often un-createable by the deployer (see catalog/schema below).
+  env_suffix:
+    description: "Per-env resource-name suffix (e.g. -dev / -tst / -prd). Empty = none."
+    default: ""
   catalog:
     description: "Unity Catalog catalog for Cyber360 gold data, metric views and aggregates"
     default: "cyber360"
@@ -147,13 +156,14 @@ variables:
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
 
-# The pipeline source and demo CSVs are synced into the workspace so the
-# Lakeflow pipeline can reference them. cyber360.yaml is synced next to the
-# pipeline so both the app and the pipeline read the SAME config SSOT.
+# The pipeline source + metric-view SQL are synced into the workspace so the
+# Lakeflow pipeline / data-plane job can reference them. cyber360.yaml is synced
+# next to the pipeline so both the app and the pipeline read the SAME config SSOT.
+# (No data/** -- synthetic gold is generated in-code by lib.generator, and the
+# identity/vuln demo CSVs were removed.)
 sync:
   include:
     - pipelines/**
-    - data/**
     - app/cyber360.yaml
     - resources/metricviews/**
 
@@ -215,29 +225,23 @@ resources:
   # registration is unnecessary. Add a `postgres_catalogs` resource later only if
   # you want UC governance over the synced tables AND hold CREATE CATALOG.
 
-  # ── UC landing zone for OCSF gold tables, metric views and aggregates ──
-  # PREREQUISITE: the UC catalog (${var.catalog}) must already exist and be
-  # owned/accessible by the deploying user (bring-your-own-catalog). The bundle
-  # only creates the schema inside it.
-  schemas:
-    cyber360_schema:
-      catalog_name: ${var.catalog}
-      name: ${var.schema}
-      comment: "Cyber360 OCSF-aligned cybersecurity posture data, metric views and KPI aggregates"
-      # NOTE: Unity Catalog grants (USE_CATALOG / USE_SCHEMA / SELECT for the
-      # user_group so members can query the metric views) are intentionally NOT
-      # managed by this bundle. UC grant principals must be ACCOUNT-level groups,
-      # whereas the app/job/pipeline permissions use the workspace groups above;
-      # granting the data layer is a one-time team/metastore-admin step. See the
-      # "Access control" section in README.md for the exact grants to apply.
-
-  volumes:
-    cyber360_data:
-      catalog_name: ${var.catalog}
-      schema_name: ${resources.schemas.cyber360_schema.name}
-      name: cyber360_data
-      volume_type: MANAGED
-      comment: "Bundled synthetic OCSF CSVs consumed by the pipeline's demo-load stage"
+  # ── UC landing zone (BRING-YOUR-OWN catalog + schema) ──
+  # PREREQUISITE: the catalog (${var.catalog}) AND schema (${var.schema}) must
+  # ALREADY EXIST and be writable by the deploying user. The bundle does NOT
+  # create or manage the schema -- on a governed workspace the deployer typically
+  # lacks CREATE SCHEMA on the catalog (e.g. `innovation`), and the customer owns
+  # the schema layout. The pipeline + metric-view sql_tasks write their tables/
+  # views INTO ${var.catalog}.${var.schema} using it directly (var.schema, not a
+  # bundle-managed schema resource).
+  #
+  # No managed `volumes:` resource either: the pipeline generates synthetic gold
+  # IN-CODE (lib/generator.generate_gold), so nothing reads a volume/CSV, and a
+  # MANAGED volume would need CREATE on the schema we don't own.
+  #
+  # UC grants (USE_CATALOG / USE_SCHEMA / SELECT for user_group so members can
+  # query the metric views) are a one-time metastore-admin step -- see README
+  # "Access control". They are not managed here (UC grant principals must be
+  # ACCOUNT-level groups, not the workspace groups used for app/job permissions).
 
   # ── Lakeflow Declarative Pipeline: OCSF gold layer ──
   # Config-driven: reads cyber360.yaml (synced next to the pipeline code) and the
@@ -247,16 +251,15 @@ resources:
     cyber360_pipeline:
       name: "[${bundle.target}] cyber360-gold"
       catalog: ${var.catalog}
-      schema: ${resources.schemas.cyber360_schema.name}
+      schema: ${var.schema}
       serverless: true
       channel: PREVIEW
       continuous: false
       development: ${var.pipeline_development}
       configuration:
         cyber360.catalog: ${var.catalog}
-        cyber360.schema: ${resources.schemas.cyber360_schema.name}
+        cyber360.schema: ${var.schema}
         cyber360.load_synthetic_data: ${var.load_synthetic_data}
-        cyber360.data_volume: "/Volumes/${var.catalog}/${resources.schemas.cyber360_schema.name}/cyber360_data"
       # Only the pipeline module + its lib package are pipeline SOURCE. Metric
       # views are no longer built by a Python script here -- they are declarative
       # .sql assets under resources/metricviews/, applied by the data-plane job's
@@ -299,7 +302,7 @@ resources:
               source: WORKSPACE
             parameters:
               catalog: ${var.catalog}
-              schema: ${resources.schemas.cyber360_schema.name}
+              schema: ${var.schema}
               source_table: ${var.phishing_source_table}
         # 2) mv_phishing: the metric view (reads the stable phishing_source name).
         #    :catalog/:schema are where the view itself LIVES.
@@ -313,12 +316,14 @@ resources:
               source: WORKSPACE
             parameters:
               catalog: ${var.catalog}
-              schema: ${resources.schemas.cyber360_schema.name}
+              schema: ${var.schema}
 
   # ── The dashboard app (FastAPI + built React SPA) ──
   apps:
     cyber360_app:
-      name: "cyber360-dashboard"
+      # env_suffix keeps dev/tst/prd app names distinct in a shared workspace
+      # (e.g. cyber360-dashboard-dev). Empty on the sandbox -> bare name.
+      name: "cyber360-dashboard${var.env_suffix}"
       description: "Cyber360 Unified Cybersecurity Posture Dashboard"
       source_code_path: ./app
 
@@ -375,7 +380,7 @@ resources:
           - name: CYBER360_CATALOG
             value: ${var.catalog}
           - name: CYBER360_SCHEMA
-            value: ${resources.schemas.cyber360_schema.name}
+            value: ${var.schema}
           # Lakebase endpoint path -- used ONLY for the app-owned state pool now
           # (mint SP credential via generate_database_credential, resolve host via
           # get_endpoint). app_connect_branch/endpoint default to production/primary;
@@ -448,13 +453,19 @@ targets:
     workspace:
       host: https://adb-5918574733311837.17.azuredatabricks.net
     variables:
+      # Per-env suffix on the workspace RESOURCE names (app + Lakebase project/db)
+      # so a future _tst/_prd on the same workspace won't collide. -dev here.
+      env_suffix: "-dev"
+      lakebase_project: cyber360-lakebase-dev
+      lakebase_database: cyber360_dev
       # Read the real federated source instead of a synthetic gold table.
       load_synthetic_data: false
       phishing_source_table: conn_cyberarch.dbo.phishing_detail
-      # Deploy INTO the customer's cybersecurity schema. catalog=innovation,
-      # schema=cybersecurity; the metric view is named phishing_detail_metric_view
-      # (metric_view.name in cyber360.yaml), so the app queries
-      # innovation.cybersecurity.phishing_detail_metric_view via MEASURE().
+      # Deploy INTO the customer's EXISTING schema (bring-your-own; the bundle does
+      # NOT create it). catalog=innovation, schema=cybersecurity -> the metric view
+      # lands at innovation.cybersecurity.phishing_detail_metric_view, queried via
+      # MEASURE(). These are FIXED (not suffixed): the deployer lacks CREATE on
+      # `innovation`, and the customer owns the schema name.
       catalog: innovation
       schema: cybersecurity
       # Serverless SQL warehouse (id from the workspace warehouse URL). Serves the
