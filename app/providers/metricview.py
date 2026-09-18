@@ -14,7 +14,8 @@ the Statement Execution API, so Unity Catalog permissions are enforced per user.
 controls / invoker-dependent expressions.)
 
 Period-over-period change is computed by querying the view over the current and
-prior windows and subtracting; the trend series is a ``GROUP BY day`` query.
+prior windows and subtracting; the trend series groups by the view's configured
+``time_dimension`` (absent -> no windowing and no trend).
 Row-level drill-downs (accounts / findings / incidents) are not part of the
 metric-view semantic layer, so those delegate to the SeedProvider -- exactly as
 the previous provider did.
@@ -34,6 +35,7 @@ from core.config import (
     normalize_period,
     rag_for_measure,
     rollup_status,
+    scale_measure_value,
 )
 from core.sql import SQLClient
 from models.common import Kpi, KpiChange, KpiLineage, TrendInfo, TrendPoint
@@ -90,15 +92,26 @@ class MetricViewProvider:
         row = rows[0] if rows else {}
         return {m: _as_float(row.get(m)) for m in measures}
 
-    def _window_where(self, period: int, *, prior: bool) -> str:
-        """Date filter on the metric view's `day` dimension for the current or
-        immediately-preceding window of `period` days."""
+    @staticmethod
+    def _time_dim(domain) -> str:
+        """The view's date dimension, or "" if it has none. Never assumed."""
+        return (getattr(domain.metric_view, "time_dimension", "") or "").strip()
+
+    def _window_where(self, domain, period: int, *, prior: bool) -> str:
+        """Date filter over the view's configured time dimension.
+
+        Returns "" when the view declares no time dimension -- the app then reads
+        the view unwindowed rather than referencing a column that does not exist
+        (which failed with UNRESOLVED_COLUMN on a real customer view)."""
+        dim = self._time_dim(domain)
+        if not dim:
+            return ""
         if prior:
             return (
-                f"`day` >= current_date() - INTERVAL {2 * period} DAY "
-                f"AND `day` < current_date() - INTERVAL {period} DAY"
+                f"`{dim}` >= current_date() - INTERVAL {2 * period} DAY "
+                f"AND `{dim}` < current_date() - INTERVAL {period} DAY"
             )
-        return f"`day` >= current_date() - INTERVAL {period} DAY"
+        return f"`{dim}` >= current_date() - INTERVAL {period} DAY"
 
     # ── KPI construction (mirrors the presentation contract in cyber-unified.yaml) ──
 
@@ -116,6 +129,11 @@ class MetricViewProvider:
         if measure is None:
             return Kpi(key=measure_name, label=measure_name, value=str(raw), raw=raw,
                        status="green", caption="", lineage=None)
+
+        # Convert the view's raw units into DISPLAY units before any formatting,
+        # RAG comparison or delta -- e.g. a 0-1 rate measure with `scale: 100`.
+        raw = scale_measure_value(measure, raw)
+        prev = scale_measure_value(measure, float(prev)) if prev is not None else None
 
         # Period-over-period change. A real prior-window delta is only meaningful
         # when the prior window is comparably populated to the current one; with a
@@ -157,12 +175,19 @@ class MetricViewProvider:
         self, domain, period: int
     ) -> dict[str, tuple[float, float]]:
         """Return {measure_name: (current_value, prior_value)} for a domain by
-        querying its metric view over the current + prior windows."""
+        querying its metric view over the current + prior windows.
+
+        A view with no time dimension cannot be windowed, so the prior window is
+        the same unfiltered read -- change then resolves to zero rather than a
+        fabricated delta. One query instead of two in that case."""
         names = [m.name for m in domain.metric_view.measures]
         mv = domain.metric_view.name
+        if not self._time_dim(domain):
+            cur = await self._measure_row(mv, names, "")
+            return {n: (cur.get(n, 0.0), cur.get(n, 0.0)) for n in names}
         cur, prev = await asyncio.gather(
-            self._measure_row(mv, names, self._window_where(period, prior=False)),
-            self._measure_row(mv, names, self._window_where(period, prior=True)),
+            self._measure_row(mv, names, self._window_where(domain, period, prior=False)),
+            self._measure_row(mv, names, self._window_where(domain, period, prior=True)),
         )
         return {n: (cur.get(n, 0.0), prev.get(n, 0.0)) for n in names}
 
@@ -257,21 +282,25 @@ class MetricViewProvider:
         )
 
     async def _trend_series(self, domain, period: int) -> list[TrendPoint]:
-        """Per-day multi-measure series over the current window: one MEASURE()
-        query grouped by the metric view's `day` dimension."""
+        """Multi-measure series grouped by the view's configured time dimension.
+
+        Returns [] when the view declares no time dimension -- there is nothing to
+        plot a trend over, and grouping by a non-existent column would fail the
+        whole request."""
         names = [m.name for m in domain.metric_view.measures]
-        if not names:
+        dim = self._time_dim(domain)
+        if not names or not dim:
             return []
         select = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m in names)
         sql = (
-            f"SELECT `day`, {select} FROM {self._mv_fqn(domain.metric_view.name)} "
-            f"WHERE {self._window_where(period, prior=False)} "
-            f"GROUP BY `day` ORDER BY `day`"
+            f"SELECT `{dim}`, {select} FROM {self._mv_fqn(domain.metric_view.name)} "
+            f"WHERE {self._window_where(domain, period, prior=False)} "
+            f"GROUP BY `{dim}` ORDER BY `{dim}`"
         )
         rows = await asyncio.to_thread(self._sql.execute, sql, token=self._token)
         series: list[TrendPoint] = []
         for r in rows:
-            day = str(r.get("day"))
+            day = str(r.get(dim))
             vals = {n: round(_as_float(r.get(n)), 2) for n in names}
             series.append(TrendPoint(day=day, values=vals))
         return series

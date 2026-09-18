@@ -166,3 +166,61 @@ def test_real_data_targets_do_not_enable_seeding(bundle: dict) -> None:
             f"target {name!r} sets load_synthetic_data={value!r}. Only the "
             "sandbox may seed; real-data targets must leave it off."
         )
+
+
+def test_sandbox_metric_view_mirrors_the_app_config() -> None:
+    """The sandbox's emulated view must expose exactly what the app config names.
+
+    The sandbox exists to MIMIC the customer's published view. If the two drift,
+    the sandbox passes while a real target fails at runtime -- which is how a `day`
+    dimension that only existed in the sandbox reached production and produced
+    `UNRESOLVED_COLUMN ... name 'day' cannot be resolved`.
+    """
+    sql = (REPO / "setup" / "sandbox" / "mv_phishing.sql").read_text()
+    body = sql.split("$$")[1]
+    view = yaml.safe_load(body)
+
+    cfg = yaml.safe_load((REPO / "app" / "cyber-unified.yaml").read_text())
+    mv_cfg = cfg["domains"][0]["metric_view"]
+
+    view_measures = sorted(m["name"] for m in view["measures"])
+    cfg_measures = sorted(m["name"] for m in mv_cfg["measures"])
+    assert view_measures == cfg_measures, (
+        f"sandbox view measures {view_measures} != app config {cfg_measures}. The "
+        "app issues MEASURE(`name`), so these must match exactly."
+    )
+
+    # A configured time_dimension must actually exist as a view dimension.
+    time_dim = (mv_cfg.get("time_dimension") or "").strip()
+    view_dims = [d.get("name") for d in view["dimensions"] if d.get("name")]
+    if time_dim:
+        assert time_dim in view_dims, (
+            f"config time_dimension {time_dim!r} is not a dimension of the sandbox "
+            f"view {view_dims}. Windowing on it would fail with UNRESOLVED_COLUMN."
+        )
+
+    # Rates must stay in the view's own units; unit conversion belongs in config
+    # (`scale`), in ONE place, so sandbox and real targets agree.
+    for measure in view["measures"]:
+        expr = measure["expr"]
+        assert "* 100" not in expr and "*100" not in expr, (
+            f"sandbox measure {measure['name']!r} scales in SQL. Scale in config "
+            "instead, so the same app config works against the customer's view."
+        )
+
+
+def test_sandbox_sql_avoids_the_statement_splitter_footguns() -> None:
+    """The dollar-quoted metric-view body must contain no semicolon.
+
+    The SQL file runner splits statements on `;`; one inside the `$$` body
+    truncates the DDL and fails the parse.
+    """
+    for name in ("mv_phishing.sql", "phishing_source.sql"):
+        text = (REPO / "setup" / "sandbox" / name).read_text()
+        parts = text.split("$$")
+        if len(parts) < 3:
+            continue
+        # parts[1] is the quoted body; the trailing `;` terminator lives in
+        # parts[2] and is legitimate.
+        body = parts[1]
+        assert ";" not in body, f"{name}: semicolon inside the $$ body breaks parsing"

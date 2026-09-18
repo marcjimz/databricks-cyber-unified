@@ -64,11 +64,11 @@ features:
 # line -- no hardcoded `trend` labels here. Keep captions only.
 top_line_kpis:
   - domain: phishing
-    measure: phishing_click_rate
+    measure: Click Rate
     caption: "Phishing click rate"
 
   - domain: phishing
-    measure: phishing_report_rate
+    measure: Report Rate
     caption: "Phishing report rate"
 
   - domain: phishing
@@ -98,10 +98,10 @@ domains:
 
     health:
       score_measures:
-        - phishing_report_rate
+        - Report Rate
       highlights:
-        - phishing_click_rate
-        - phishing_report_rate
+        - Click Rate
+        - Report Rate
         - count
 
     metric_view:
@@ -115,49 +115,61 @@ domains:
       comment: >-
         Phishing & email-security measures over simulated-phishing campaign
         events (click, report, and no-action outcomes).
+      # DATE dimension used for the 30/60/90-day windows and the trend chart.
+      # MUST name a dimension the published view actually exposes. LEAVE EMPTY if
+      # it has none -- the app then reads the view unwindowed and renders no
+      # trend, instead of failing with UNRESOLVED_COLUMN. The live edp_dev view
+      # (version 1.1, source conn_cyberarch.dbo.phishing_detail) declares only
+      # Region + Campaign Name, so there is no time dimension to window on.
+      time_dimension: ""
+      # Dimensions the view exposes, mirrored here for display/lineage only -- the
+      # app does not create or validate them.
       dimensions:
-        - name: day
-          expression: "CAST(eventtimestamp AS DATE)"
-          comment: "Event date dimension"
         - name: Region
-          expression: "Region"
-          comment: "Geographic region of the recipient"
+          expression: "source.Region"
+          comment: "Geographic region of the user who received the phishing email"
         - name: Campaign Name
-          expression: "campaignname"
+          expression: "source.campaignname"
           comment: "Name of the phishing campaign"
-      # Measure MATH is written in PORTABLE SQL (CASE WHEN / NULLIF / standard
-      # division) and is IDENTICAL to resources/metricviews/mv_phishing.sql, so
-      # the same string evaluates in Spark (the metric view, prod) and DuckDB
-      # (the seed provider, local dev). Keep the two in sync.
+      # Measure NAMES must match the published view's measure names EXACTLY -- the
+      # app issues MEASURE(`<name>`). `expression` is display lineage only; the
+      # math lives in the view.
+      #
+      # The live view returns rates as 0-1 FRACTIONS (`.../ NULLIF(COUNT(*), 0)`
+      # with no *100), while the app renders `format: percent` as 0-100 -- hence
+      # `scale: 100` on each rate. RAG thresholds below are in DISPLAY units.
       measures:
-        - name: phishing_click_rate
+        - name: Click Rate
           label: "Phishing click rate"
-          expression: "COUNT(CASE WHEN eventtype = 'Email Click' THEN 1 END) / NULLIF(COUNT(*), 0) * 100"
+          expression: "COUNT(CASE WHEN eventtype = 'Email Click' THEN 1 END) / NULLIF(COUNT(*), 0)"
           comment: "Percentage of phishing emails where the recipient clicked the link."
           format: percent
           percent_digits: 2
+          scale: 100
           goal: lower
           green: 5
           amber: 10
           caption: "Target: <5%"
 
-        - name: phishing_report_rate
+        - name: Report Rate
           label: "Phishing report rate"
-          expression: "COUNT(CASE WHEN eventtype = 'Reported' THEN 1 END) / NULLIF(COUNT(*), 0) * 100"
+          expression: "COUNT(CASE WHEN eventtype = 'Reported' THEN 1 END) / NULLIF(COUNT(*), 0)"
           comment: "Percentage of phishing emails reported by the recipient."
           format: percent
           percent_digits: 2
+          scale: 100
           goal: higher
           green: 15
           amber: 8
           caption: "Target: >15%"
 
-        - name: avg_click_rate
+        - name: Avg Click Rate
           label: "Average click rate"
-          expression: "AVG(CASE WHEN eventtype = 'Email Click' THEN 1.0 ELSE 0.0 END) * 100"
+          expression: "AVG(CASE WHEN eventtype = 'Email Click' THEN 1.0 ELSE 0.0 END)"
           comment: "Average click rate across all phishing records (1 clicked / 0 not)."
           format: percent
           percent_digits: 2
+          scale: 100
           goal: lower
           green: 5
           amber: 10

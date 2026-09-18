@@ -1,28 +1,29 @@
--- CyberUnified UC Metric View: Phishing & Email Security.
--- This file is the source of truth for the metric-view definition and owns its
--- own lifecycle as a DAB asset. It is executed by the cyber_unified_data_plane job
--- via a sql_task; :catalog, :schema and :source_table are supplied as task
--- parameters so the file carries no hardcoded location.
+-- CyberUnified: EMULATED phishing metric view -- SANDBOX ONLY.
 --
--- The metric view LIVES in :catalog.:schema (USE ... below) and reads the stable
--- `phishing_source` view (created by phishing_source.sql, a separate sql_task
--- step run first). That indirection lets the per-target source swap be a pure
--- task parameter (:source_table) without string-templating this fragile
--- $$-dollar-quoted body. Keep this file to a SINGLE CREATE (plus the two USE
--- statements): the SQL-file task executor mis-parses a file that also creates the
--- source view alongside the metric-view body.
+-- On a real target this view ALREADY EXISTS and is owned by the customer; the app
+-- is given its NAME (domains[].metric_view.name) and only reads it. This file
+-- exists so the sandbox can reproduce that view locally over synthetic gold, and
+-- is applied by `make sandbox-metricview sandbox` (setup/sandbox/apply_metricview.py),
+-- which refuses any non-sandbox target. It is NOT a bundle resource and NOT a
+-- deploy step.
 --
--- NOTES vs. the raw CyberArk schema:
---   * A `day` dimension (CAST(eventtimestamp AS DATE)) is added -- the app
---     windows KPI reads on `day >= current_date() - INTERVAL N DAY` and builds
---     the trend series with GROUP BY `day`, so every metric view needs it.
---   * The rate measures are scaled *100: the app renders `format: percent` as a
---     0-100 value, whereas the raw rate expressions are 0-1 fractions.
---   * Measure exprs are written in PORTABLE SQL (CASE WHEN / NULLIF / standard
---     division -- no try_divide/COUNT_IF) so the IDENTICAL string in cyber-unified.yaml
---     evaluates the same in Spark (here) and in DuckDB (the local seed provider).
---   * Region / Campaign Name are surfaced as named dimensions; every other source
---     column comes through the `source.* EXCEPT (...)` wildcard.
+-- It is a DELIBERATE MIRROR of the live edp_dev definition (version 1.1, source
+-- conn_cyberarch.dbo.phishing_detail) so the SAME app config resolves on both:
+--   * SAME measure names: count / Click Rate / Avg Click Rate / Report Rate.
+--     The app issues MEASURE(`<name>`), so these must match exactly.
+--   * SAME 0-1 FRACTION rates (no *100). The app converts to percent via
+--     `scale: 100` in cyber-unified.yaml, so the scaling lives in ONE place.
+--   * SAME dimensions: Region + Campaign Name, plus the source.* EXCEPT wildcard.
+--     NOTE there is intentionally NO `day` dimension -- the live view has none, and
+--     inventing one here would let the sandbox pass while edp_dev failed with
+--     UNRESOLVED_COLUMN. metric_view.time_dimension is therefore "" on both.
+--
+-- If the customer's view changes, update this file to match and keep
+-- cyber-unified.yaml pointing at the real measure names.
+--
+-- FOOTGUN: keep this YAML body free of the semicolon character AND of a doubled
+-- dollar sign. The statement splitter is dollar-quote aware, but a semicolon or a
+-- stray doubled dollar inside a comment can still truncate the DDL.
 USE CATALOG IDENTIFIER(:catalog);
 USE SCHEMA IDENTIFIER(:schema);
 
@@ -31,14 +32,10 @@ version: 1.1
 comment: "Phishing and email-security posture measures over simulated-phishing campaign events (click, report, and no-action outcomes)."
 source: phishing_source
 dimensions:
-  - expr: "source.* EXCEPT (Region, campaignname, eventtimestamp)"
-  - name: day
-    expr: CAST(eventtimestamp AS DATE)
-    comment: Event date dimension (drives the 30/60/90-day windows and trend)
-    display_name: Day
+  - expr: "source.* EXCEPT (Region, campaignname)"
   - name: Region
     expr: source.Region
-    comment: Geographic region of the recipient
+    comment: Geographic region of the user who received the phishing email
     display_name: Region
   - name: Campaign Name
     expr: source.campaignname
@@ -47,11 +44,11 @@ dimensions:
 measures:
   - name: count
     expr: COUNT(*)
-    comment: Total number of phishing-campaign event rows in the dataset.
+    comment: Represents the total number of rows in the dataset. Use this measure to count all
     display_name: Count
-  - name: phishing_click_rate
-    expr: COUNT(CASE WHEN eventtype = 'Email Click' THEN 1 END) / NULLIF(COUNT(*), 0) * 100
-    comment: Percentage of phishing emails where the recipient clicked the link (clicks / total).
+  - name: Click Rate
+    expr: COUNT(CASE WHEN eventtype = 'Email Click' THEN 1 END) / NULLIF(COUNT(*), 0)
+    comment: Percentage of phishing emails where the recipient clicked the link, calculated as clicks divided by total emails sent
     display_name: Phishing Click Rate
     format:
       type: percentage
@@ -63,9 +60,9 @@ measures:
       - phishing email click percentage
       - click-through rate
       - CTR
-  - name: avg_click_rate
-    expr: AVG(CASE WHEN eventtype = 'Email Click' THEN 1.0 ELSE 0.0 END) * 100
-    comment: Average click rate across all phishing records (each scored 1 clicked / 0 not).
+  - name: Avg Click Rate
+    expr: AVG(CASE WHEN eventtype = 'Email Click' THEN 1.0 ELSE 0.0 END)
+    comment: Average click rate across all phishing email records, where each record is scored as 1 (clicked) or 0 (not clicked)
     display_name: Average Click Rate
     format:
       type: percentage
@@ -77,9 +74,9 @@ measures:
       - email click rate
       - CTR
       - click-through rate
-  - name: phishing_report_rate
-    expr: COUNT(CASE WHEN eventtype = 'Reported' THEN 1 END) / NULLIF(COUNT(*), 0) * 100
-    comment: Percentage of phishing emails that were reported by the recipient (reports / total).
+  - name: Report Rate
+    expr: COUNT(CASE WHEN eventtype = 'Reported' THEN 1 END) / NULLIF(COUNT(*), 0)
+    comment: Percentage of phishing emails that were reported by the recipient, calculated as reports divided by total emails sent
     display_name: Phishing Report Rate
     format:
       type: percentage
@@ -91,33 +88,4 @@ measures:
       - reported percentage
       - phishing report percentage
       - email report rate
-# Materialization accelerates the KPI reads (aggregate-aware query rewriting).
-# The app queries this view natively with MEASURE() and the optimizer serves
-# precomputed results. The day-grained aggregated MV covers the 30/60/90-day
-# window rollups the app filters on, and the unaggregated baseline is the
-# fallback for any query the aggregate cannot satisfy. Keep this view free of
-# per-user access controls / invoker-dependent exprs (current_user/is_member) --
-# materialization precomputes as the owner and is disabled for views that carry
-# them. Per-user governance is enforced by OBO at query time instead.
-# NOTE: keep this YAML body free of the semicolon character AND of a doubled
-# dollar sign -- the sql_task file runner splits statements on the semicolon
-# (ignoring dollar-quoting) and the doubled dollar closes this quoted body early,
-# so either one inside a comment truncates the DDL and fails the parse.
-materialization:
-  schedule: every 6 hours
-  mode: relaxed
-  materialized_views:
-    - name: by_day
-      type: aggregated
-      dimensions:
-        - day
-      measures:
-        - count
-        - phishing_click_rate
-        - avg_click_rate
-        - phishing_report_rate
-      partition_by:
-        - day
-    - name: baseline
-      type: unaggregated
 $$;

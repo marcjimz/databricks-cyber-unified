@@ -124,6 +124,12 @@ class MeasureConfig(BaseModel):
     comment: str = ""
     format: MeasureFormat = MeasureFormat.count
     percent_digits: int = 0
+    # Multiplier applied to the RAW value from the metric view before formatting
+    # and RAG comparison. A view whose rate measures are 0-1 FRACTIONS (the usual
+    # convention) needs scale: 100 to render as a percentage; a view that already
+    # multiplies by 100 leaves this at 1. Never assumed -- it is a property of the
+    # published view, so it is declared per measure in config.
+    scale: float = 1.0
     goal: RagGoal = RagGoal.higher
     green: float | None = None
     amber: float | None = None
@@ -134,6 +140,12 @@ class MeasureConfig(BaseModel):
 
 class MetricViewConfig(BaseModel):
     """Points at an ALREADY-PUBLISHED UC metric view -- the app never creates it.
+
+    NOTHING about the view's shape is assumed. `time_dimension` names the view's
+    date dimension, if it has one; when EMPTY (the default) the app issues no
+    date predicate and renders no trend series, because a view without a date
+    dimension cannot be windowed. Declaring a dimension the view does not expose
+    is what produced `UNRESOLVED_COLUMN ... name 'day' cannot be resolved`.
 
     `name` is the only required field and is the whole per-target contract: point
     it at whatever metric view the environment already exposes (the name can and
@@ -147,6 +159,10 @@ class MetricViewConfig(BaseModel):
 
     name: str
     comment: str = ""
+    # Name of the view's DATE dimension, used for the 30/60/90-day windows and the
+    # trend series. EMPTY = the view has none -> no date filter, no trend. Must
+    # match a dimension the published view actually exposes.
+    time_dimension: str = ""
     dimensions: list[DimensionConfig] = []
     measures: list[MeasureConfig] = []
 
@@ -285,8 +301,18 @@ def rollup_status(statuses: list[RagStatus]) -> RagStatus:
     return RagStatus.green
 
 
+def scale_measure_value(measure: MeasureConfig, raw: float) -> float:
+    """Apply the measure's configured `scale` to a raw metric-view value.
+
+    Rate measures are conventionally 0-1 fractions in a metric view, while the app
+    renders percentages 0-100; `scale: 100` bridges that. Applied ONCE, before both
+    formatting and RAG comparison, so thresholds are always in display units.
+    """
+    return raw * measure.scale
+
+
 def format_measure_value(measure: MeasureConfig, raw: float) -> str:
-    """Format a raw measure value for display."""
+    """Format an ALREADY-SCALED measure value for display."""
     fmt = measure.format
     if fmt == MeasureFormat.percent:
         digits = measure.percent_digits
