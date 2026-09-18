@@ -224,3 +224,34 @@ def test_sandbox_sql_avoids_the_statement_splitter_footguns() -> None:
         # parts[2] and is legitimate.
         body = parts[1]
         assert ";" not in body, f"{name}: semicolon inside the $$ body breaks parsing"
+
+
+def test_no_protected_lakebase_branch_or_endpoint_resource(bundle: dict) -> None:
+    """Never declare the IMPLICIT Lakebase production branch / primary endpoint.
+
+    A `postgres_projects` resource already creates both. Declaring the branch makes
+    DAB delete-and-recreate it on any identity-field change, and the API refuses --
+    `cannot delete protected branch (400)` -- which then cascades "dependency
+    failed" onto the endpoint, the database and the app, breaking the whole deploy.
+    Compute bounds belong in the project's `default_endpoint_settings`.
+    """
+    resources = bundle["resources"]
+    for kind in ("postgres_branches", "postgres_endpoints"):
+        assert kind not in resources, (
+            f"`{kind}` is declared again. The production branch is PROTECTED and the "
+            "primary endpoint is implicit -- configure them via "
+            "postgres_projects.default_endpoint_settings instead."
+        )
+
+
+def test_lakebase_paths_do_not_depend_on_resource_outputs(raw: str) -> None:
+    """Lakebase paths must be built from variables, not ${resources.postgres_*}.
+
+    Referencing a postgres resource's output re-creates the dependency edge whose
+    failure cascaded across every Lakebase resource and the app.
+    """
+    refs = re.findall(r"\$\{resources\.(postgres_[a-z_]+)\.([a-z_0-9]+)\.", raw)
+    assert not refs, (
+        f"Lakebase paths reference resource outputs {refs}. Build them from "
+        "${var.lakebase_project} / ${var.lakebase_branch} instead."
+    )
