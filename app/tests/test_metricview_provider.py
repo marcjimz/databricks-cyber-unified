@@ -194,21 +194,21 @@ def test_detail_rows_query_is_config_driven(config):
     # metric view, applies the chosen filter's WHERE, and paginates -- all config.
     from models.detail import DetailQuery
 
+    # Derive the expected columns FROM CONFIG -- hardcoding them here is how a
+    # stale field name (campaignname, dropped by the view's EXCEPT wildcard)
+    # survived into production.
+    expected = [c.field for c in config.domains[0].detail_table.columns]
     fake = FakeSQLClient([
         ("COUNT(*)", [{"n": 209}]),
-        ("SELECT `eventtimestamp`", [{"eventtimestamp": "2026-09-01T00:00:00.000Z",
-                                      "useremailaddress": "a@b.org",
-                                      "campaignname": "C", "eventtype": "Email Click",
-                                      "Region": "Desert", "templatesubject": "S"}]),
+        ("SELECT `", [{f: "x" for f in expected}]),
     ])
     p = _provider(config, fake)
     resp = asyncio.run(p.get_detail_rows("phishing", DetailQuery(filter_key="clicked", page=1, page_size=5)))
 
     assert resp.total == 209
-    assert [c.field for c in resp.columns] == [
-        "eventtimestamp", "useremailaddress", "campaignname", "eventtype", "Region", "templatesubject"]
+    assert [c.field for c in resp.columns] == expected
     # the configured filter's trusted WHERE fragment was applied
-    rows_q = next(q for q in fake.queries if q.startswith("SELECT `eventtimestamp`"))
+    rows_q = next(q for q in fake.queries if q.startswith("SELECT `") and "COUNT(*)" not in q)
     assert "eventtype = 'Email Click'" in rows_q
     assert "LIMIT 5 OFFSET 0" in rows_q
     # The drill-down reads the SAME already-published metric view the KPIs use --

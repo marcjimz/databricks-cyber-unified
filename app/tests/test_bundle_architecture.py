@@ -255,3 +255,72 @@ def test_lakebase_paths_do_not_depend_on_resource_outputs(raw: str) -> None:
         f"Lakebase paths reference resource outputs {refs}. Build them from "
         "${var.lakebase_project} / ${var.lakebase_branch} instead."
     )
+
+
+def _sandbox_view_columns() -> set[str]:
+    """Every column name the sandbox metric view exposes.
+
+    = (source columns - the wildcard's EXCEPT list) + named dimensions + measures.
+    The sandbox view mirrors the customer's, so this is our best static proxy for
+    "what can the app actually SELECT".
+    """
+    sql = (REPO / "setup" / "sandbox" / "mv_phishing.sql").read_text()
+    view = yaml.safe_load(sql.split("$$")[1])
+
+    excluded: set[str] = set()
+    for dim in view["dimensions"]:
+        if "name" in dim:
+            continue
+        match = re.search(r"EXCEPT\s*\((.*?)\)", dim.get("expr", ""))
+        if match:
+            excluded = {c.strip() for c in match.group(1).split(",")}
+
+    seeder = (REPO / "scripts" / "seed_synthetic_gold.py").read_text()
+    source_cols = set(re.findall(r'StructField\("([^"]+)"', seeder))
+
+    named = {d["name"] for d in view["dimensions"] if d.get("name")}
+    measures = {m["name"] for m in view["measures"]}
+    return (source_cols - excluded) | named | measures
+
+
+def test_detail_table_columns_exist_on_the_metric_view() -> None:
+    """Every drill-down column must be a column the metric view exposes.
+
+    A `source.* EXCEPT (campaignname, ...)` wildcard REMOVES the raw column and the
+    named dimension re-exposes it under a different name (`Campaign Name`).
+    Selecting the raw name then fails at runtime with
+    `UNRESOLVED_COLUMN ... campaignname ... Did you mean [Campaign Name]`.
+    """
+    exposed = _sandbox_view_columns()
+    cfg = yaml.safe_load((REPO / "app" / "cyber-unified.yaml").read_text())
+
+    for domain in cfg.get("domains", []):
+        table = domain.get("detail_table") or {}
+        for column in table.get("columns", []):
+            field = column["field"]
+            assert field in exposed, (
+                f"detail_table column {field!r} is not exposed by the metric view. "
+                f"Exposed: {sorted(exposed)}"
+            )
+        order_by = (table.get("order_by") or "").split()
+        if order_by:
+            assert order_by[0] in exposed, (
+                f"order_by column {order_by[0]!r} is not exposed by the metric view."
+            )
+
+
+def test_detail_filters_reference_exposed_columns() -> None:
+    """Filter WHERE fragments must only reference columns the view exposes."""
+    exposed = _sandbox_view_columns()
+    cfg = yaml.safe_load((REPO / "app" / "cyber-unified.yaml").read_text())
+
+    for domain in cfg.get("domains", []):
+        table = domain.get("detail_table") or {}
+        for flt in table.get("filters", []):
+            where = flt.get("where") or ""
+            # Leading identifier of each `<col> <op> ...` comparison.
+            for ident in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|<|>|!=|LIKE|IN)", where):
+                assert ident in exposed, (
+                    f"filter {flt['key']!r} references column {ident!r}, which the "
+                    f"metric view does not expose. Exposed: {sorted(exposed)}"
+                )
