@@ -94,8 +94,8 @@ def test_sparse_prior_falls_back_to_synthesis(config):
 
 
 def test_detail_rows_query_is_config_driven(config):
-    # The generic drill-down SELECTs the configured columns from source_table,
-    # applies the chosen filter's WHERE, and paginates -- all from config.
+    # The generic drill-down SELECTs the configured columns from the published
+    # metric view, applies the chosen filter's WHERE, and paginates -- all config.
     from models.detail import DetailQuery
 
     fake = FakeSQLClient([
@@ -115,9 +115,11 @@ def test_detail_rows_query_is_config_driven(config):
     rows_q = next(q for q in fake.queries if q.startswith("SELECT `eventtimestamp`"))
     assert "eventtype = 'Email Click'" in rows_q
     assert "LIMIT 5 OFFSET 0" in rows_q
-    # drill-down reads the phishing_source pass-through view (right data on every
-    # target), NOT the raw per-target source_table.
-    assert "cat.sch.phishing_source" in rows_q
+    # The drill-down reads the SAME already-published metric view the KPIs use --
+    # NOT an invented pass-through view, and NOT the underlying source table (which
+    # the app has no privilege on, and no longer knows about).
+    assert "cat.sch.phishing_detail_metric_view" in rows_q
+    assert "phishing_source" not in rows_q
 
 
 def test_scorecard_builds_from_measure_rows(config):

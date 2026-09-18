@@ -133,8 +133,19 @@ class MeasureConfig(BaseModel):
 
 
 class MetricViewConfig(BaseModel):
+    """Points at an ALREADY-PUBLISHED UC metric view -- the app never creates it.
+
+    `name` is the only required field and is the whole per-target contract: point
+    it at whatever metric view the environment already exposes (the name can and
+    does differ per environment) and the app reads it. Both the KPI measures and
+    the drill-down rows come from this one relation.
+
+    `dimensions` / `measures` are the app's READ-SIDE contract: which MEASURE()
+    names to request and how to present them (format, RAG thresholds). They
+    describe the existing view; they do not define or publish it.
+    """
+
     name: str
-    source_table: str
     comment: str = ""
     dimensions: list[DimensionConfig] = []
     measures: list[MeasureConfig] = []
@@ -162,7 +173,7 @@ class DetailFilterConfig(BaseModel):
 class DetailTableConfig(BaseModel):
     """Config-driven drill-down table for a domain. The generic
     /api/{domain}/rows endpoint SELECTs `columns` from the domain's
-    metric_view.source_table, applying the chosen `filters` predicate and
+    published metric view, applying the chosen `filters` predicate and
     `order_by`. No per-domain row model or endpoint -- adding a table is pure
     config. When absent/empty, the domain simply renders no table."""
     label: str = "Records"
@@ -192,6 +203,10 @@ class DomainConfig(BaseModel):
     genie: GenieConfig = GenieConfig()
     health: DomainHealthConfig = DomainHealthConfig()
     metric_view: MetricViewConfig
+    # LOCAL-ONLY: name for the synthetic gold table the SeedProvider registers in
+    # DuckDB (and the sandbox seed job writes to UC). Not used by the metric-view
+    # path, which reads the published view by name. Defaults to `<key>_detail`.
+    gold_table: str = ""
     # Optional config-driven drill-down table. Absent -> the domain page renders
     # no detail table (KPIs/trends still show).
     detail_table: DetailTableConfig = DetailTableConfig()

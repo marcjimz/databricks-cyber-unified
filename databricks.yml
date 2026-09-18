@@ -10,14 +10,15 @@
 #   postgres_branches     -> the project's `production` branch (replace_existing)
 #   postgres_endpoints    -> the project's `primary` RW endpoint (replace_existing)
 #   postgres_databases    -> the logical Postgres database the app connects to
-#   schemas / volumes     -> UC landing zone for OCSF gold + demo CSVs
-#   pipelines             -> Lakeflow Declarative Pipeline (config-driven by
-#                            cyber-unified.yaml): builds the OCSF gold tables
-#   resources/metricviews -> UC Metric View definitions (.sql) WITH materialization,
-#                            each its own DAB-managed asset, applied by the
-#                            data-plane job's sql_task steps against the SQL
-#                            warehouse. The app queries these natively for KPIs.
+#   jobs                  -> the GATED synthetic-gold seed (sandbox only)
 #   apps                  -> the FastAPI + React dashboard
+#
+# The semantic layer is a Unity Catalog METRIC VIEW that ALREADY EXISTS on the
+# target. The app is given its name (domains[].metric_view.name in
+# cyber-unified.yaml) and queries it per-user (OBO) -- the bundle creates no
+# pipeline, no source view, and no metric view. Generating a metric view over
+# synthetic data is a sandbox utility (setup/sandbox/*.sql +
+# `make sandbox-metricview`), never a deployed resource.
 #
 # All workspace-specific values flow as DAB variables -> app.yaml env ->
 # ${VAR} placeholders resolved in cyber-unified.yaml at startup. Never hardcode.
@@ -132,18 +133,20 @@ variables:
       GATE for the synthetic-gold seed job (cyber_unified_seed_job). The job is a
       no-op unless this is explicitly true, so it defaults FALSE -- real-data
       targets must never seed over the customer's tables. The sandbox turns it on
-      via `make seed sandbox`. This gates the SEED ONLY; it no longer affects the
-      app or the metric views (which read var.phishing_source_table on every
-      target).
+      via `make seed sandbox`. This gates the SEED ONLY -- the app reads an
+      already-published metric view and is unaffected.
     default: false
+  # ── SANDBOX-UTILITY-ONLY variable ──
+  # Source table the sandbox's GENERATED metric view reads. Used only by
+  # `make sandbox-metricview`, which applies setup/sandbox/*.sql to emulate the
+  # customer's metric view over synthetic gold. The BUNDLE never uses this: real
+  # targets already have a published metric view and the app is given its name.
   phishing_source_table:
     description: >-
-      Table the phishing metric view READS. Defaults to the UNQUALIFIED
-      `phishing_detail`, which resolves to the synthetic sandbox gold table in
-      the view's own catalog/schema (the DDL runs after USE CATALOG/USE SCHEMA).
-      The edp_dev target overrides this to the fully-qualified real CyberArk
-      federated source (conn_cyberarch.dbo.phishing_detail). The metric view
-      itself always lives in ${var.catalog}.${var.schema}.
+      SANDBOX UTILITY ONLY -- source table for the emulated metric view generated
+      by `make sandbox-metricview`. Defaults to the unqualified `phishing_detail`
+      (the seeded synthetic gold in ${var.catalog}.${var.schema}). Not referenced
+      by any bundle resource.
     default: "phishing_detail"
   genie_phishing_embed_url:
     description: "Genie Space embed URL for the Phishing & Email Security domain drawer"
@@ -154,19 +157,16 @@ variables:
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
 
-# Synced into the workspace so the jobs can reference them: the metric-view SQL
-# (data-plane sql_tasks), the seed script + its generator library, and
-# cyber-unified.yaml so the app and the seeder read the SAME config SSOT.
-# pipelines/** is now a plain helper library (no deployed pipeline) -- the seed
-# script imports lib.config/lib.generator from it.
-# (No data/** -- synthetic gold is generated in-code by lib.generator, and the
-# identity/vuln demo CSVs were removed.)
+# Synced into the workspace for the SEED job only: the seed script, its generator
+# library, and cyber-unified.yaml so the app and the seeder read the SAME config
+# SSOT. (No setup/sandbox/*.sql -- the metric-view emulation is applied from the
+# CLI by `make sandbox-metricview`, not by a deployed resource. No data/** --
+# synthetic gold is generated in-code by lib.generator.)
 sync:
   include:
     - pipelines/**
     - scripts/**
     - app/cyber-unified.yaml
-    - resources/metricviews/**
 
 resources:
   # ── Lakebase autoscaling project: managed Postgres for KPI reads + app state ──
@@ -244,81 +244,37 @@ resources:
   # "Access control". They are not managed here (UC grant principals must be
   # ACCOUNT-level groups, not the workspace groups used for app/job permissions).
 
-  # ── NO `pipelines:` RESOURCE. ──
-  # Synthetic gold is a DEVELOPMENT AID, not part of the application. The former
-  # Lakeflow declarative pipeline (`cyber_unified_pipeline`) deployed to EVERY
-  # target, including the customer workspaces that already have real tables +
-  # schemas -- so it created a pipeline object nobody wanted and, with
-  # load_synthetic_data=false, defined zero tables and FAILED graph analysis
-  # ("Task build_gold failed"), taking the metric-view steps down with it.
+  # ── THE APP READS AN EXISTING UC METRIC VIEW. IT CREATES NOTHING. ──
+  # We standardize on the Unity Catalog metric view as the semantic layer. On a
+  # real target it is ALREADY PUBLISHED and owned by the customer; the app is
+  # handed its NAME (domains[].metric_view.name in cyber-unified.yaml) and just
+  # queries it -- both KPI MEASURE()s and the drill-down rows. The name can differ
+  # per environment; that is the whole per-target contract.
   #
-  # The generator now lives in scripts/seed_synthetic_gold.py, run by the GATED
-  # cyber_unified_seed_job below (bluebird `seed_demo_data` idiom): a separate
-  # `make seed sandbox` step, never part of `make deploy`, and inert unless
-  # load_synthetic_data=true. pipelines/lib/** is kept as a plain helper library
-  # (the app's SeedProvider shares the same generator).
+  # So there is NO `pipelines:` resource and NO data-plane job. Both used to exist
+  # and both were wrong for the same reason -- they CREATED things in the
+  # customer's workspace:
+  #   * the Lakeflow pipeline built synthetic gold (and with
+  #     load_synthetic_data=false defined zero tables -> failed graph analysis);
+  #   * the data-plane job ran CREATE OR REPLACE VIEW phishing_source (needed
+  #     USE CATALOG on the customer's federated source catalog -> denied) and then
+  #     CREATE VIEW ... WITH METRICS, re-publishing a metric view that already
+  #     existed.
+  #
+  # Generating a metric view + synthetic data is a SANDBOX UTILITY, not part of
+  # the application: setup/sandbox/*.sql applied by `make sandbox-metricview`, and
+  # the gated seed job below. Neither is a deploy step, and neither is needed by
+  # any real target.
 
-  # ── Orchestration job: UC Metric Views (the app's semantic layer) ──
-  # `CREATE ... VIEW WITH METRICS` is UC DDL, so each domain's metric view is a
-  # .sql asset under resources/metricviews/ applied by a sql_task on the SQL
-  # warehouse (var.warehouse_id). The .sql files carry no hardcoded location:
-  # :catalog / :schema are passed as sql_task parameters and bound via
-  # USE CATALOG/SCHEMA IDENTIFIER(...). Adding a domain = add a .sql file + a
-  # task here.
-  #
-  # This job is TARGET-AGNOSTIC: it only ever builds views over whatever
-  # var.phishing_source_table points at (synthetic gold on the sandbox, the real
-  # CyberArk federated table on edp_dev). It does NOT build data, so it runs
-  # identically on a customer workspace. Run it with:
-  #   databricks bundle run cyber_unified_data_plane -t <target>
   jobs:
-    cyber_unified_data_plane:
-      name: "[${bundle.target}] cyber-unified-data-plane"
-      tasks:
-        # 1) phishing_source: a thin view over the per-target source table.
-        #    :source_table is what it READS -- synthetic gold in the sandbox, the
-        #    real CyberArk table in edp_dev (see targets). Split into its own step
-        #    (single CREATE) because the SQL-file task executor mis-parses a file
-        #    that mixes this CREATE with the metric view's $$-quoted body.
-        - task_key: phishing_source
-          sql_task:
-            warehouse_id: ${var.warehouse_id}
-            file:
-              path: ${workspace.file_path}/resources/metricviews/phishing_source.sql
-              source: WORKSPACE
-            parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-              source_table: ${var.phishing_source_table}
-        # 2) mv_phishing: the metric view (reads the stable phishing_source name).
-        #    :catalog/:schema are where the view itself LIVES.
-        - task_key: metric_view_phishing
-          depends_on:
-            - task_key: phishing_source
-          sql_task:
-            warehouse_id: ${var.warehouse_id}
-            file:
-              path: ${workspace.file_path}/resources/metricviews/mv_phishing.sql
-              source: WORKSPACE
-            parameters:
-              catalog: ${var.catalog}
-              schema: ${var.schema}
-      # Per-resource permissions: manage_group manages, user_group can view.
-      permissions:
-        - level: CAN_MANAGE
-          group_name: ${var.manage_group}
-        - level: CAN_VIEW
-          group_name: ${var.user_group}
-
     # ── Synthetic gold seed -- SANDBOX ONLY, and GATED (bluebird idiom) ──
-    # Replaces the deleted Lakeflow pipeline. NEVER writes anything unless
-    # var.load_synthetic_data resolves true (default false), so it is inert even
-    # if it lands on a target that should not seed. It is NOT part of
-    # `make deploy` -- run it explicitly with `make seed sandbox`.
+    # NEVER writes anything unless var.load_synthetic_data resolves true (default
+    # false), so it is inert even if it lands on a target that should not seed. It
+    # is NOT part of `make deploy` -- run it explicitly with `make seed sandbox`.
     #
     # Real-data targets (edp_dev/prod) have their own tables and never run this;
-    # the sandbox uses it to MIMIC the customer's schema so the same metric view
-    # works against both.
+    # the sandbox uses it to MIMIC the customer's schema so the same metric-view
+    # shape works against both.
     cyber_unified_seed_job:
       name: "[${bundle.target}] cyber-unified-seed-synthetic-gold (gated)"
       # Serverless. The generator needs no extra packages (stdlib + PySpark from
@@ -444,13 +400,16 @@ resources:
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
   # ── databricks_sandbox: FEVM demo/dev box (SYNTHETIC data) ──
-  # The working environment for building + testing the app end-to-end. This is
-  # the ONLY target that seeds: `make seed sandbox` runs the gated seed job to
-  # write the synthetic `phishing_detail` gold table, MIMICKING the real CyberArk
-  # schema so the same metric view works here and on edp_dev. The metric view
-  # then reads it (the unqualified phishing_source_table default resolves to the
-  # local gold). `workspace.host` is a literal per-target (it cannot be a ${var}
-  # -- it configures auth), which pins the deploy to the FEVM sandbox.
+  # The working environment for building + testing the app end-to-end, and the
+  # ONLY target that generates anything. Two sandbox-only utility steps EMULATE
+  # what a real workspace already provides:
+  #   make seed sandbox              -> write the synthetic `phishing_detail` gold
+  #                                     table (mimics the real CyberArk schema)
+  #   make sandbox-metricview sandbox -> publish a metric view over it, so
+  #                                     metric_view.name resolves here too
+  # Neither is a deploy step; neither exists on a real target.
+  # `workspace.host` is a literal per-target (it cannot be a ${var} -- it
+  # configures auth), which pins the deploy to the FEVM sandbox.
   databricks_sandbox:
     default: true
     # No `mode: development` (bluebird pattern) -- avoid dev-mode name-mangling so
@@ -489,19 +448,21 @@ targets:
       # Hyphen, not underscore: lakebase_database feeds database_id, which must
       # match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ (no underscores).
       lakebase_database: cyber-unified-dev
-      # Read the real federated source. load_synthetic_data stays at its FALSE
-      # default -- this workspace has real data and its own schema, so it must
-      # never seed (and the seed job is a no-op here even if it is run).
-      phishing_source_table: conn_cyberarch.dbo.phishing_detail
-      # Deploy INTO the customer's EXISTING schema (bring-your-own; the bundle does
-      # NOT create it). catalog=innovation, schema=cybersecurity -> the metric view
-      # lands at innovation.cybersecurity.phishing_detail_metric_view, queried via
-      # MEASURE(). These are FIXED (not suffixed): the deployer lacks CREATE on
+      # NOTE: no phishing_source_table here. This workspace ALREADY has its
+      # published metric view; the app is given its name via
+      # domains[].metric_view.name in cyber-unified.yaml and reads it. Nothing is
+      # created, so no privilege on conn_cyberarch is needed. load_synthetic_data
+      # also stays FALSE (its default) -- real data, never seed.
+      #
+      # Where the app LOOKS for that metric view (bring-your-own; the bundle does
+      # NOT create the schema): innovation.cybersecurity ->
+      # innovation.cybersecurity.phishing_detail_metric_view, queried via
+      # MEASURE(). FIXED (not suffixed): the deployer lacks CREATE on
       # `innovation`, and the customer owns the schema name.
       catalog: innovation
       schema: cybersecurity
       # Serverless SQL warehouse (id from the workspace warehouse URL). Serves the
-      # metric-view sql_tasks AND the app's per-user KPI reads.
+      # app's per-user KPI + drill-down reads.
       warehouse_id: "67db57985bbae271"
       # QA group drives workspace access via the per-resource permission blocks:
       # CAN_MANAGE on app/job/pipeline + CAN_USE on the app. manage_group ==

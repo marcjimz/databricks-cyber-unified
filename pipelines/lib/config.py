@@ -84,8 +84,13 @@ class PipelineConfig:
         return self._raw.get("domains", [])
 
     def gold_table_name(self, domain: dict) -> str:
-        """Unqualified gold table name from a domain's metric_view.source_table."""
-        return domain["metric_view"]["source_table"].split(".")[-1]
+        """Unqualified name of the SYNTHETIC gold table to seed for this domain.
+
+        Sandbox-only bookkeeping: `gold_table` when set, else `<key>_detail`. This
+        used to derive from metric_view.source_table, which was removed -- the app
+        reads an already-published metric view BY NAME and never knows its source.
+        """
+        return domain.get("gold_table") or f"{domain['key']}_detail"
 
     def fq(self, name: str) -> str:
         """Fully-qualify an unqualified table/view name into catalog.schema."""
