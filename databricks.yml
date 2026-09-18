@@ -40,8 +40,9 @@ bundle:
 # pipeline follows -- there is no per-user permission anywhere. The names are
 # variables so the same bundle serves any workspace; the groups must PRE-EXIST
 # (DABs cannot create groups).
-#   manage_group -> app/job/pipeline CAN_MANAGE
-#   user_group   -> app CAN_USE, job/pipeline CAN_VIEW
+#   manage_group    -> app/job/Lakebase CAN_MANAGE
+#   developer_group -> app/job/Lakebase CAN_MANAGE (the build/debug audience)
+#   user_group      -> app CAN_USE, job CAN_VIEW
 # These are declared PER-RESOURCE on the app/job/pipeline blocks (see the NOTE
 # below), so each group gets exactly one grant per resource.
 #
@@ -72,6 +73,16 @@ variables:
       grant this group USE_CATALOG + USE_SCHEMA + SELECT on the catalog/schema
       out-of-band (see README "Access control"). Bring-your-own group.
     default: "DPG_CYBER360_USER"
+  developer_group:
+    description: >-
+      Databricks GROUP of DEVELOPERS who build/debug the app. Gets CAN_MANAGE on
+      the app, the seed job and the Lakebase project -- i.e. they can redeploy,
+      restart, read logs and inspect Lakebase, in addition to whatever
+      manage_group/user_group already grant. Bring-your-own (DABs cannot create
+      groups). Set it to the SAME value as manage_group if you do not want a
+      separate developer audience -- the CLI de-dupes identical (group, level)
+      pairs to a single grant, so that is a safe no-op rather than a warning.
+    default: "DPG_CYBER360_MANAGE"
   # Per-environment suffix so dev/tst/prd deploys coexist in a shared workspace
   # without name collisions (bluebird pattern). Applied to the workspace-level
   # RESOURCE names -- app + Lakebase project/database. Each target sets it
@@ -208,6 +219,17 @@ resources:
         autoscaling_limit_max_cu: ${var.lakebase_max_cu}
         # Scale to zero after this much inactivity (1 day by default).
         suspend_timeout_duration: ${var.lakebase_suspend_after}
+      # Administer the Lakebase PROJECT (inspect the endpoint, browse the app's
+      # state database, manage roles). This is an ADMINISTRATIVE privilege on the
+      # Postgres project only -- it grants no access to the UC metric view or the
+      # customer's data, which stay governed by Unity Catalog and read per-user
+      # (OBO). Note there is no `permissions` field on postgres_databases, so the
+      # project is the only place Lakebase access is declared.
+      permissions:
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
+        - level: CAN_MANAGE
+          group_name: ${var.developer_group}
 
   postgres_databases:
     cyber_unified_db:
@@ -298,9 +320,13 @@ resources:
               - "--load_synthetic_data=${var.load_synthetic_data}"
               - "--catalog=${var.catalog}"
               - "--schema=${var.schema}"
+      # Developers get CAN_MANAGE so they can run/inspect the seed job on a
+      # sandbox; user_group only needs to see runs.
       permissions:
         - level: CAN_MANAGE
           group_name: ${var.manage_group}
+        - level: CAN_MANAGE
+          group_name: ${var.developer_group}
         - level: CAN_VIEW
           group_name: ${var.user_group}
 
@@ -398,6 +424,8 @@ resources:
           user_name: ${workspace.current_user.userName}
         - level: CAN_MANAGE
           group_name: ${var.manage_group}
+        - level: CAN_MANAGE
+          group_name: ${var.developer_group}
         - level: CAN_USE
           group_name: ${var.user_group}
 
@@ -476,13 +504,18 @@ targets:
       # Serverless SQL warehouse (id from the workspace warehouse URL). Serves the
       # app's per-user KPI + drill-down reads.
       warehouse_id: "67db57985bbae271"
-      # QA group drives workspace access via the per-resource permission blocks:
-      # CAN_MANAGE on app/job/pipeline + CAN_USE on the app. manage_group ==
-      # user_group here, so the CLI de-dupes to CAN_MANAGE (no "already set"
-      # warning). Must PRE-EXIST (DABs cannot create groups). Data-layer UC grants
-      # remain a one-time metastore-admin step (README "Access control").
+      # Two audiences drive workspace access via the per-resource permission
+      # blocks. QA manages + uses; DEVELOPERS additionally get CAN_MANAGE on the
+      # app, the seed job and the Lakebase project (redeploy, restart, read logs,
+      # inspect Postgres). manage_group == user_group here, so the CLI de-dupes
+      # those two to a single CAN_MANAGE (no "already set" warning).
+      # BOTH GROUPS MUST PRE-EXIST -- DABs cannot create groups, and a missing one
+      # fails the deploy. Data-layer UC grants remain a one-time metastore-admin
+      # step (README "Access control"); to let developers query the metric view,
+      # grant DPG_CYBERSECURITY_DEVELOPER USE_CATALOG + USE_SCHEMA + SELECT too.
       manage_group: DPG_CYBERSECURITY_QA
       user_group: DPG_CYBERSECURITY_QA
+      developer_group: DPG_CYBERSECURITY_DEVELOPER
 
   # Prod: the released application, sourced from `main`. Real customer data, so
   # load_synthetic_data stays FALSE (its default) and nothing seeds here.
