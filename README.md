@@ -150,9 +150,7 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
 
 The bundle defines two targets: **`dev`** (the working environment for building +
 testing) and **`prod`** (the released app, promoted via `promote.yml`). Both
-validate. Two prod-specific settings make `mode: production` happy:
-- the pipeline's `development` flag is a per-target variable
-  (`pipeline_development`, `true` for dev, pinned `false` for prod);
+validate. One prod-specific setting makes `mode: production` happy:
 - `prod` sets an explicit `workspace.root_path` (a single shared copy, not
   per-user-prefixed like dev).
 
@@ -342,7 +340,8 @@ table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
    ```
 
 2. (Optional) reference a measure in `top_line_kpis` to add a scorecard tile.
-3. `databricks bundle deploy -t dev && databricks bundle run cyber_unified_pipeline -t dev`.
+3. `make deploy sandbox` (builds the metric views). On the sandbox, add
+   `make seed sandbox` first if the domain needs synthetic gold to read.
 
 That's it — nav link, KPI tiles, trend charts, drill-down table, and Genie drawer
 all appear with **zero code**.
