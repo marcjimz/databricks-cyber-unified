@@ -195,7 +195,10 @@ domains:
       columns:
         - { field: eventtimestamp, label: "When", format: datetime }
         - { field: useremailaddress, label: "Recipient" }
-        - { field: campaignname, label: "Campaign" }
+        # `campaignname` is EXCLUDED by the view's `source.* EXCEPT (...)` wildcard
+        # and re-exposed as the named dimension `Campaign Name` -- so that (quoted,
+        # with the space) is the column that exists on the view.
+        - { field: Campaign Name, label: "Campaign" }
         - { field: eventtype, label: "Outcome" }
         - { field: Region, label: "Region" }
         - { field: templatesubject, label: "Subject" }
