@@ -52,12 +52,16 @@ resources/
   metricviews/
     mv_phishing.sql        UC Metric View (CREATE VIEW WITH METRICS LANGUAGE YAML) + materialization. :catalog/:schema
                            are where the view LIVES; :source_table is what it READS (swaps per target — pure config).
+scripts/
+  seed_synthetic_gold.py   SANDBOX-ONLY, GATED synthetic gold seed (_GOLD_SCHEMAS). A spark_python_task run by
+                           `make seed sandbox` — NOT part of deploy, and a no-op unless load_synthetic_data=true.
+                           Replaced the old Lakeflow pipeline, which deployed to every target (incl. customer
+                           workspaces that already have real tables) and failed graph analysis when it defined
+                           no tables. Synthetic data is a DEV AID; it is never an app resource.
 pipelines/
-  cyber_unified_pipeline.py     Lakeflow pipeline: config-gated synthetic gold-table load (_GOLD_SCHEMAS). No metric-view DDL
-                           here (a declarative pipeline cannot run CREATE VIEW WITH METRICS — that's the data-plane job).
   lib/generator.py         Deterministic synthetic gold rows (phishing_detail). The ONE source of synthetic data, shared
-                           by the pipeline's demo-load AND the app's seed provider.
-  lib/config.py            Dependency-free cyber-unified.yaml reader for the pipeline (no app import).
+                           by the seed job AND the app's seed provider. A plain helper library (no deployed pipeline).
+  lib/config.py            Dependency-free cyber-unified.yaml reader for the seeder (no app import).
 setup/generate_csvs.py     Standalone CSV emitter (make generate-data) — reference/inspection only.
 app/
   cyber-unified.yaml            THE config (SSOT): org, data_source, domains (metric_view measures + dimensions + detail_table),

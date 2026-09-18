@@ -128,8 +128,14 @@ variables:
       the full projects/<p>/branches/<b>/roles/<role_id> owner reference.
     default: "marcin-jimenez"
   load_synthetic_data:
-    description: "Gate the pipeline's demo-data ingest stage. true = load bundled OCSF CSVs; false = build views/aggregates over the customer's existing gold tables (bring-your-own-data)."
-    default: true
+    description: >-
+      GATE for the synthetic-gold seed job (cyber_unified_seed_job). The job is a
+      no-op unless this is explicitly true, so it defaults FALSE -- real-data
+      targets must never seed over the customer's tables. The sandbox turns it on
+      via `make seed sandbox`. This gates the SEED ONLY; it no longer affects the
+      app or the metric views (which read var.phishing_source_table on every
+      target).
+    default: false
   phishing_source_table:
     description: >-
       Table the phishing metric view READS. Defaults to the UNQUALIFIED
@@ -142,25 +148,23 @@ variables:
   genie_phishing_embed_url:
     description: "Genie Space embed URL for the Phishing & Email Security domain drawer"
     default: ""
-  pipeline_development:
-    description: >-
-      Whether the Lakeflow pipeline runs in development mode (reuses compute,
-      relaxed retries -- fast iteration). MUST be false for a `mode: production`
-      target, which rejects a development pipeline. Defaults true for dev and is
-      overridden to false in the prod target below.
-    default: true
+  # (var.pipeline_development removed with the Lakeflow pipeline -- there is no
+  # pipeline to put in development mode any more.)
 
 workspace:
   root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
 
-# The pipeline source + metric-view SQL are synced into the workspace so the
-# Lakeflow pipeline / data-plane job can reference them. cyber-unified.yaml is synced
-# next to the pipeline so both the app and the pipeline read the SAME config SSOT.
+# Synced into the workspace so the jobs can reference them: the metric-view SQL
+# (data-plane sql_tasks), the seed script + its generator library, and
+# cyber-unified.yaml so the app and the seeder read the SAME config SSOT.
+# pipelines/** is now a plain helper library (no deployed pipeline) -- the seed
+# script imports lib.config/lib.generator from it.
 # (No data/** -- synthetic gold is generated in-code by lib.generator, and the
 # identity/vuln demo CSVs were removed.)
 sync:
   include:
     - pipelines/**
+    - scripts/**
     - app/cyber-unified.yaml
     - resources/metricviews/**
 
@@ -240,64 +244,43 @@ resources:
   # "Access control". They are not managed here (UC grant principals must be
   # ACCOUNT-level groups, not the workspace groups used for app/job permissions).
 
-  # ── Lakeflow Declarative Pipeline: OCSF gold layer ──
-  # Config-driven: reads cyber-unified.yaml (synced next to the pipeline code) and the
-  # LOAD_SYNTHETIC_DATA flag. Lands the OCSF gold tables the metric views sit on.
-  # (KPI aggregation is now done by the metric views + materialization, not here.)
-  pipelines:
-    cyber_unified_pipeline:
-      name: "[${bundle.target}] cyber-unified-gold"
-      catalog: ${var.catalog}
-      schema: ${var.schema}
-      serverless: true
-      channel: PREVIEW
-      continuous: false
-      development: ${var.pipeline_development}
-      configuration:
-        cyber_unified.catalog: ${var.catalog}
-        cyber_unified.schema: ${var.schema}
-        cyber_unified.load_synthetic_data: ${var.load_synthetic_data}
-      # Only the pipeline module + its lib package are pipeline SOURCE. Metric
-      # views are no longer built by a Python script here -- they are declarative
-      # .sql assets under resources/metricviews/, applied by the data-plane job's
-      # sql_task steps against the SQL warehouse (UC Metric View DDL cannot run
-      # inside a declarative pipeline).
-      libraries:
-        - glob:
-            include: pipelines/cyber_unified_pipeline.py
-        - glob:
-            include: pipelines/lib/**
-      # Per-resource permissions: manage_group manages, user_group can view.
-      permissions:
-        - level: CAN_MANAGE
-          group_name: ${var.manage_group}
-        - level: CAN_VIEW
-          group_name: ${var.user_group}
+  # ── NO `pipelines:` RESOURCE. ──
+  # Synthetic gold is a DEVELOPMENT AID, not part of the application. The former
+  # Lakeflow declarative pipeline (`cyber_unified_pipeline`) deployed to EVERY
+  # target, including the customer workspaces that already have real tables +
+  # schemas -- so it created a pipeline object nobody wanted and, with
+  # load_synthetic_data=false, defined zero tables and FAILED graph analysis
+  # ("Task build_gold failed"), taking the metric-view steps down with it.
+  #
+  # The generator now lives in scripts/seed_synthetic_gold.py, run by the GATED
+  # cyber_unified_seed_job below (bluebird `seed_demo_data` idiom): a separate
+  # `make seed sandbox` step, never part of `make deploy`, and inert unless
+  # load_synthetic_data=true. pipelines/lib/** is kept as a plain helper library
+  # (the app's SeedProvider shares the same generator).
 
-  # ── Orchestration job: pipeline (gold + aggregates) -> UC Metric Views ──
-  # `CREATE ... VIEW WITH METRICS` is UC DDL that a declarative pipeline cannot
-  # run, so each domain's metric view is a .sql asset under resources/metricviews/
-  # applied by a sql_task chained after the pipeline, executed on the SQL
+  # ── Orchestration job: UC Metric Views (the app's semantic layer) ──
+  # `CREATE ... VIEW WITH METRICS` is UC DDL, so each domain's metric view is a
+  # .sql asset under resources/metricviews/ applied by a sql_task on the SQL
   # warehouse (var.warehouse_id). The .sql files carry no hardcoded location:
   # :catalog / :schema are passed as sql_task parameters and bound via
   # USE CATALOG/SCHEMA IDENTIFIER(...). Adding a domain = add a .sql file + a
-  # task here. Run the whole data plane with:
-  #   databricks bundle run cyber_unified_data_plane -t dev
+  # task here.
+  #
+  # This job is TARGET-AGNOSTIC: it only ever builds views over whatever
+  # var.phishing_source_table points at (synthetic gold on the sandbox, the real
+  # CyberArk federated table on edp_dev). It does NOT build data, so it runs
+  # identically on a customer workspace. Run it with:
+  #   databricks bundle run cyber_unified_data_plane -t <target>
   jobs:
     cyber_unified_data_plane:
       name: "[${bundle.target}] cyber-unified-data-plane"
       tasks:
-        - task_key: build_gold
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.cyber_unified_pipeline.id}
         # 1) phishing_source: a thin view over the per-target source table.
         #    :source_table is what it READS -- synthetic gold in the sandbox, the
         #    real CyberArk table in edp_dev (see targets). Split into its own step
         #    (single CREATE) because the SQL-file task executor mis-parses a file
         #    that mixes this CREATE with the metric view's $$-quoted body.
         - task_key: phishing_source
-          depends_on:
-            - task_key: build_gold
           sql_task:
             warehouse_id: ${var.warehouse_id}
             file:
@@ -321,6 +304,38 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
       # Per-resource permissions: manage_group manages, user_group can view.
+      permissions:
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
+        - level: CAN_VIEW
+          group_name: ${var.user_group}
+
+    # ── Synthetic gold seed -- SANDBOX ONLY, and GATED (bluebird idiom) ──
+    # Replaces the deleted Lakeflow pipeline. NEVER writes anything unless
+    # var.load_synthetic_data resolves true (default false), so it is inert even
+    # if it lands on a target that should not seed. It is NOT part of
+    # `make deploy` -- run it explicitly with `make seed sandbox`.
+    #
+    # Real-data targets (edp_dev/prod) have their own tables and never run this;
+    # the sandbox uses it to MIMIC the customer's schema so the same metric view
+    # works against both.
+    cyber_unified_seed_job:
+      name: "[${bundle.target}] cyber-unified-seed-synthetic-gold (gated)"
+      # Serverless. The generator needs no extra packages (stdlib + PySpark from
+      # the runtime), but a serverless task still needs an environment to attach.
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "3"
+      tasks:
+        - task_key: seed_synthetic_gold
+          environment_key: default
+          spark_python_task:
+            python_file: ${workspace.file_path}/scripts/seed_synthetic_gold.py
+            parameters:
+              - "--load_synthetic_data=${var.load_synthetic_data}"
+              - "--catalog=${var.catalog}"
+              - "--schema=${var.schema}"
       permissions:
         - level: CAN_MANAGE
           group_name: ${var.manage_group}
@@ -429,12 +444,13 @@ resources:
 # `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
 targets:
   # ── databricks_sandbox: FEVM demo/dev box (SYNTHETIC data) ──
-  # The working environment for building + testing the app end-to-end. The
-  # pipeline generates the synthetic `phishing_detail` gold table
-  # (load_synthetic_data=true) and the metric view reads it (the unqualified
-  # phishing_source_table default resolves to the local gold). `workspace.host`
-  # is a literal per-target (it cannot be a ${var} -- it configures auth), which
-  # pins the deploy to the FEVM sandbox.
+  # The working environment for building + testing the app end-to-end. This is
+  # the ONLY target that seeds: `make seed sandbox` runs the gated seed job to
+  # write the synthetic `phishing_detail` gold table, MIMICKING the real CyberArk
+  # schema so the same metric view works here and on edp_dev. The metric view
+  # then reads it (the unqualified phishing_source_table default resolves to the
+  # local gold). `workspace.host` is a literal per-target (it cannot be a ${var}
+  # -- it configures auth), which pins the deploy to the FEVM sandbox.
   databricks_sandbox:
     default: true
     # No `mode: development` (bluebird pattern) -- avoid dev-mode name-mangling so
@@ -473,8 +489,9 @@ targets:
       # Hyphen, not underscore: lakebase_database feeds database_id, which must
       # match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ (no underscores).
       lakebase_database: cyber-unified-dev
-      # Read the real federated source instead of a synthetic gold table.
-      load_synthetic_data: false
+      # Read the real federated source. load_synthetic_data stays at its FALSE
+      # default -- this workspace has real data and its own schema, so it must
+      # never seed (and the seed job is a no-op here even if it is run).
       phishing_source_table: conn_cyberarch.dbo.phishing_detail
       # Deploy INTO the customer's EXISTING schema (bring-your-own; the bundle does
       # NOT create it). catalog=innovation, schema=cybersecurity -> the metric view
@@ -494,16 +511,14 @@ targets:
       manage_group: DPG_CYBERSECURITY_QA
       user_group: DPG_CYBERSECURITY_QA
 
-  # Prod: the released application, sourced from `main`. The pipeline must NOT be
-  # in development mode here (mode: production rejects it), so pin the flag false.
+  # Prod: the released application, sourced from `main`. Real customer data, so
+  # load_synthetic_data stays FALSE (its default) and nothing seeds here.
   prod:
     mode: production
     # `mode: production` requires an explicit, non-user-scoped root_path so the
     # deploy is a single shared copy (not prefixed per deploying user like dev).
     workspace:
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
-    variables:
-      pipeline_development: false
     # Permissions are group-driven and identical across targets (the per-resource
     # blocks reference ${var.manage_group} / ${var.user_group}), so prod needs no
     # permission override here.

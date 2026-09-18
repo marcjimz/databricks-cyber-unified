@@ -7,8 +7,9 @@
 #
 # Individual steps (same positional env):
 #   make validate sandbox    # databricks bundle validate -t databricks_sandbox
-#   make data-plane sandbox  # run cyber_unified_data_plane (pipeline gold + phishing metric view)
+#   make data-plane sandbox  # run cyber_unified_data_plane (phishing_source + metric view)
 #   make app sandbox         # deploy + run the app (cyber_unified_app)
+#   make seed sandbox        # SANDBOX ONLY: write the synthetic gold table (gated)
 #
 # `make deploy sandbox` = exactly:
 #   databricks bundle validate -t databricks_sandbox
@@ -36,6 +37,7 @@ FE_DIST  := $(FE_DIR)/dist
 # Full resource keys (a bare prefix like `cyber_unified_` fails with "resource not found").
 DATA_PLANE_JOB := cyber_unified_data_plane
 APP_KEY        := cyber_unified_app
+SEED_JOB       := cyber_unified_seed_job
 
 # Env words treated as a positional target (kept in sync with databricks.yml
 # `targets:`). Short aliases + the canonical names are both accepted.
@@ -63,7 +65,7 @@ PFLAG := $(if $(PROFILE),-p $(PROFILE),)
 
 .PHONY: help install install-backend install-frontend build build-frontend \
         dev lint lint-backend lint-frontend clean generate-data \
-        guard-target setup deploy release validate data-plane app $(ENVS)
+        guard-target setup deploy release validate data-plane app seed $(ENVS)
 
 # ──────────────────────────────────────────────
 # Development (local, no workspace)
@@ -82,8 +84,10 @@ help: ## Show this help
 	@echo "    make setup <env>        FIRST-TIME: deploy x2 -> data-plane -> app"
 	@echo "    make release <env>      build the SPA THEN deploy (use when the UI changed; needs npm)"
 	@echo "    make validate <env>     bundle validate only"
-	@echo "    make data-plane <env>   run $(DATA_PLANE_JOB) (gold + phishing metric view)"
+	@echo "    make data-plane <env>   run $(DATA_PLANE_JOB) (phishing_source + metric view)"
 	@echo "    make app <env>          deploy + run the app ($(APP_KEY))"
+	@echo "  Sandbox synthetic data (NOT part of deploy; real-data envs never seed):"
+	@echo "    make seed sandbox       write the synthetic gold table ($(SEED_JOB), gated)"
 
 install: install-backend install-frontend ## Install all dependencies
 
@@ -162,12 +166,21 @@ release: build
 validate: guard-target ## bundle validate only
 	databricks bundle validate -t $(TARGET) $(PFLAG)
 
-data-plane: guard-target ## run the data-plane job (pipeline gold + phishing metric view)
+data-plane: guard-target ## run the data-plane job (phishing_source + phishing metric view)
 	databricks bundle run -t $(TARGET) $(PFLAG) $(DATA_PLANE_JOB)
 
 app: guard-target ## deploy + (re)start the app
 	databricks bundle deploy -t $(TARGET) $(PFLAG)
 	databricks bundle run    -t $(TARGET) $(PFLAG) $(APP_KEY)
+
+# Synthetic-gold seed -- SANDBOX ONLY, and deliberately NOT part of `deploy`
+# (bluebird `make seed` idiom). Real-data targets (edp_dev/prod) have their own
+# tables and must never seed; load_synthetic_data defaults FALSE, so the job is a
+# no-op unless it is turned on right here. The flag is passed to BOTH deploy and
+# run because the parameter is baked into the job definition at deploy time.
+seed: guard-target ## SANDBOX: write the synthetic gold table (gated on load_synthetic_data)
+	databricks bundle deploy -t $(TARGET) $(PFLAG) --var="load_synthetic_data=true"
+	databricks bundle run    -t $(TARGET) $(PFLAG) --var="load_synthetic_data=true" $(SEED_JOB)
 
 # Env words are inert goals (consumed by ENV/TARGET above) so `make deploy sandbox`
 # doesn't try to build a target literally named `sandbox`.
