@@ -1,4 +1,4 @@
-# Cyber360 Unified Dashboard — Development Skill & Compliance Guide
+# CyberUnified Unified Dashboard — Development Skill & Compliance Guide
 
 > **Audience:** Genie Code (and any AI/human contributor) shipping on this repo.
 > **Read this first.** It encodes the non-negotiable principles, the architecture
@@ -12,7 +12,7 @@
 **Configuration drives everything. Code is the engine; YAML is the steering wheel.**
 
 The application is *config-driven*. The single source of truth is the dashboard
-spec YAML (`app/cyber360.yaml`, mirrored in the frontend as
+spec YAML (`app/cyber-unified.yaml`, mirrored in the frontend as
 `lib/config/dashboard-spec.ts`). Adding a domain, adding a KPI, repointing a
 metric, swapping a Genie Space, or retuning a RAG threshold is a **YAML edit** —
 never a component or endpoint change.
@@ -76,7 +76,7 @@ new provider backends.
    The data plane is declared, not scripted: `database_instance`, `pipelines`,
    `synced_database_tables`, `schemas`, `volumes`, and `apps` are all DAB
    resources in `databricks.yml`. Pipeline *code* exists but is **config-driven**
-   (parameterized by `cyber360.yaml`) and run by Lakeflow — not standalone
+   (parameterized by `cyber-unified.yaml`) and run by Lakeflow — not standalone
    `python setup.py`-style glue. If you reach for a one-off script to move or
    shape data, stop: express it as a pipeline transform or a synced table.
 
@@ -100,7 +100,7 @@ new provider backends.
 
 ```
                         ┌─────────────────── DATA PLANE (100% DABs-declarative) ───────────────────┐
-OCSF gold tables ──▶ Lakeflow Declarative Pipeline (config-driven by cyber360.yaml)
+OCSF gold tables ──▶ Lakeflow Declarative Pipeline (config-driven by cyber-unified.yaml)
  (bring-your-own,      │  1. generates UC Metric Views  (governed semantic layer)
   demo optional)       │  2. materializes measures → daily-grain + 30/60/90d aggregate tables
                        ▼                                             (CDF + primary keys)
@@ -145,7 +145,7 @@ Genie Spaces + SQL Warehouse ──▶ interactive Genie drawer ONLY (OBO, UC-en
   runs anywhere. `LakebaseProvider` is the production path.
 - All workspace-specific values (catalog, schema, Lakebase instance, warehouse id,
   Genie embed URLs) flow as **DAB variables → `app.yaml` env vars → `${VAR}`
-  placeholders resolved in `cyber360.yaml` at startup**. Never hardcode a
+  placeholders resolved in `cyber-unified.yaml` at startup**. Never hardcode a
   workspace URL, catalog, or ID anywhere.
 - The entire stack is deployed via DABs (`databricks.yml`) using native resources
   only: `database_instance`, `pipelines`, `synced_database_tables`, `schemas`,
@@ -270,7 +270,7 @@ sourced from `main` — never a feature branch. (There is no `tst` tier: just
   (forward-only, immutable once merged). Never edit an applied migration; never
   hand-run DDL against the shared branch. The runner applies pending files at
   app startup and CI validates them.
-- **Domain/KPI change → `cyber360.yaml` only** (see §1). Render it against the
+- **Domain/KPI change → `cyber-unified.yaml` only** (see §1). Render it against the
   forked data (dev-loop or shared dev app pointed at the branch) before you promote.
 - **Bundle/infra change → keep the default (production) path byte-identical.**
   The `app_connect_*` vars default to `production/primary`; feature isolation is
@@ -280,8 +280,8 @@ sourced from `main` — never a feature branch. (There is no `tst` tier: just
 
 **Required CI settings** (repo/environment): OAuth M2M via a service principal —
 secret `DATABRICKS_CLIENT_SECRET`; variables `DATABRICKS_HOST`,
-`DATABRICKS_CLIENT_ID`, `CYBER360_CATALOG`, `CYBER360_WAREHOUSE_ID`,
-`CYBER360_OWNER_ROLE`, `CYBER360_LAKEBASE_PROJECT`. Gate `prod` with a protected
+`DATABRICKS_CLIENT_ID`, `CYBERUNIFIED_CATALOG`, `CYBERUNIFIED_WAREHOUSE_ID`,
+`CYBERUNIFIED_OWNER_ROLE`, `CYBERUNIFIED_LAKEBASE_PROJECT`. Gate `prod` with a protected
 GitHub environment + required reviewers. (No PATs.)
 
 ### 5b. Access control — group-driven, declarative
@@ -325,7 +325,7 @@ variables `manage_group` / `user_group`, default `DPG_CYBER360_MANAGE` /
 
 A change is done when:
 
-- [ ] The behavior is driven by `cyber360.yaml`, not code (unless it's engine work).
+- [ ] The behavior is driven by `cyber-unified.yaml`, not code (unless it's engine work).
 - [ ] `SeedProvider` still runs the full dashboard with zero workspace deps.
 - [ ] No hardcoded workspace/catalog/ID/URL anywhere; all via DAB vars → env → YAML.
 - [ ] KPIs read from Lakebase (prod path) and are OCSF-gold-backed.

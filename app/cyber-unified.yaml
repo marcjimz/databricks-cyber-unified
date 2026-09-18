@@ -1,5 +1,5 @@
 # ============================================================================
-# Cyber360 Dashboard Configuration
+# CyberUnified Dashboard Configuration
 # ============================================================================
 # This file drives every aspect of the dashboard: domains, measures, KPIs,
 # Genie Spaces, and data sources. Customers change THIS file to point at
@@ -16,13 +16,13 @@ org:
 
 # --- Data source configuration ---
 data_source:
-  catalog: "${CYBER360_CATALOG}"
-  schema: "${CYBER360_SCHEMA}"
+  catalog: "${CYBERUNIFIED_CATALOG}"
+  schema: "${CYBERUNIFIED_SCHEMA}"
   warehouse_id: "${DATABRICKS_WAREHOUSE_ID}"   # SQL Warehouse: KPI metric-view reads + Genie drawer
   # "seed"       = in-memory OCSF synthesis (zero workspace deps, demo/local).
   # "metricview" = query UC metric views natively on the SQL Warehouse (per-user
   #                OBO), accelerated by metric-view materialization.
-  provider: "${CYBER360_PROVIDER:-seed}"
+  provider: "${CYBERUNIFIED_PROVIDER:-seed}"
 
 # --- Lakebase configuration ---
 # Lakebase now serves ONE role: app-owned read-write state (preferences/chats/
@@ -34,21 +34,21 @@ lakebase:
   # Autoscaling endpoint path (projects/<p>/branches/<b>/endpoints/<e>) used to
   # mint the SP credential and resolve the Postgres host.
   endpoint_name: "${LAKEBASE_ENDPOINT_NAME}"
-  database_name: "${LAKEBASE_DATABASE_NAME:-cyber360}"
+  database_name: "${LAKEBASE_DATABASE_NAME:-cyber-unified}"
   # Postgres schema the app service principal owns for its read-write state
   # tables (created + owned by the app at startup; no external grant needed).
-  app_schema: "cyber360_app"
+  app_schema: "cyber_unified_app"
   # App-owned state tables (read-write, created by session-bootstrap migrations).
   state_tables:
-    preferences: "cyber360_preferences"
-    chats: "cyber360_chats"
-    sessions: "cyber360_sessions"
+    preferences: "cyber_unified_preferences"
+    chats: "cyber_unified_chats"
+    sessions: "cyber_unified_sessions"
 
 # --- Data loading configuration ---
 data_loading:
   enabled: true
-  target_catalog: "${CYBER360_CATALOG}"
-  target_schema: "${CYBER360_SCHEMA}"
+  target_catalog: "${CYBERUNIFIED_CATALOG}"
+  target_schema: "${CYBERUNIFIED_SCHEMA}"
   load_synthetic: true
 
 # --- Feature flags ---
@@ -112,7 +112,7 @@ domains:
       # pass-through view in the deploy catalog/schema (see MetricViewProvider),
       # which exists on every target and resolves to the right underlying data
       # (synthetic gold on sandbox, conn_cyberarch.dbo.phishing_detail on edp_dev).
-      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.phishing_detail"
+      source_table: "${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}.phishing_detail"
       comment: >-
         Phishing & email-security measures over simulated-phishing campaign
         events (click, report, and no-action outcomes).

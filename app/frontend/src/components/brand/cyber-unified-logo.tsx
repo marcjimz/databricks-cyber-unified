@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils"
 
 /**
- * Cyber360 brand mark.
+ * CyberUnified brand mark.
  *
  * Uses the org logo: the full-color logo on light surfaces and the approved
  * one-color white logo on dark surfaces. Swap the assets in `public/` to
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
  * plain <img> tags with absolute paths work in both the Vite dev server and the
  * FastAPI-served production build.
  */
-export function Cyber360Logo({
+export function CyberUnifiedLogo({
   className,
   showWordmark = true,
 }: {

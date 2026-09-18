@@ -10,7 +10,7 @@ on:
     branches: [main]
 
 env:
-  LAKEBASE_PROJECT: ${{ vars.CYBER360_LAKEBASE_PROJECT }}
+  LAKEBASE_PROJECT: ${{ vars.CYBERUNIFIED_LAKEBASE_PROJECT }}
 
 jobs:
   teardown:

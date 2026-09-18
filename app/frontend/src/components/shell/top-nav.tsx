@@ -1,7 +1,7 @@
 import { BarChart3, Gauge, LayoutGrid, MessagesSquare, Radar } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
-import { Cyber360Logo } from "@/components/brand/cyber360-logo"
+import { CyberUnifiedLogo } from "@/components/brand/cyber-unified-logo"
 import { useGenie } from "@/components/genie/genie-provider"
 import { ThemeToggle } from "@/components/shell/theme-toggle"
 import { UserAvatar } from "@/components/shell/user-avatar"
@@ -30,7 +30,7 @@ export function TopNav() {
     <header className="sticky top-0 z-40 border-b border-border bg-card/85 backdrop-blur supports-[backdrop-filter]:bg-card/70">
       <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-4 sm:px-6 lg:px-8">
         <Link to="/scorecard" className="shrink-0">
-          <Cyber360Logo />
+          <CyberUnifiedLogo />
         </Link>
 
         <nav className="flex items-center gap-1">

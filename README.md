@@ -2,14 +2,14 @@
   <img src="docs/assets/dbx-banner.jpeg" alt="Databricks" width="100%" />
 </p>
 
-# Cyber360 Unified Dashboard
+# CyberUnified Unified Dashboard
 
 A cybersecurity posture dashboard that runs as a Databricks App. It shows KPIs
 across security domains (identity, vulnerabilities, and more) on top of your
 OCSF data.
 
 **You configure it, you don't code it.** Everything — domains, measures, KPIs,
-thresholds, Genie Spaces — lives in **`app/cyber360.yaml`**. Adding a domain is a
+thresholds, Genie Spaces — lives in **`app/cyber-unified.yaml`**. Adding a domain is a
 YAML edit, not a code change.
 
 > New here? Read **[`SKILL.md`](./SKILL.md)** first for the design principles.
@@ -53,7 +53,7 @@ React SPA ─▶ FastAPI ─▶ LakebaseProvider (KPI reads) ──────�
 - **Bring-your-own prerequisites** (the bundle does *not* create these):
   - The **UC catalog** (`var.catalog`) must already exist and be owned/accessible by
     the deploying identity — the bundle only creates the schema inside it.
-  - The **reader group** (`var.lakebase_reader_group`, default `cyber360-lakebase-readers`)
+  - The **reader group** (`var.lakebase_reader_group`, default `cyber-unified-lakebase-readers`)
     must already exist as a Databricks group, **and the app service principal must be
     a member.** The KPI read path connects as this group's Postgres role.
 
@@ -90,7 +90,7 @@ export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase
 databricks bundle deploy -t dev $VARS
 
 # 2. Build the data plane — pipeline (gold + agg_daily/agg_rollup) then the metric views.
-databricks bundle run cyber360_data_plane -t dev $VARS
+databricks bundle run cyber_unified_data_plane -t dev $VARS
 
 # 3. Phase-2 deploy — now the synced tables succeed (their sources exist). "Deployment complete!"
 databricks bundle deploy -t dev $VARS
@@ -100,7 +100,7 @@ databricks bundle deploy -t dev $VARS
 databricks bundle run cyber360_grant_reader_role -t dev $VARS
 
 # 5. Start the app (prints the app URL).
-databricks bundle run cyber360_app -t dev $VARS
+databricks bundle run cyber_unified_app -t dev $VARS
 ```
 
 > **Why the grant step (4) exists:** Databricks does not propagate UC / `uc_securable`
@@ -134,13 +134,13 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
    ```bash
    export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
    databricks bundle deploy -t dev $VARS                    # phase 1 (synced tables fail — expected)
-   databricks bundle run cyber360_data_plane -t dev $VARS   # build aggregates
+   databricks bundle run cyber_unified_data_plane -t dev $VARS   # build aggregates
    databricks bundle deploy -t dev $VARS                    # phase 2 (synced tables succeed)
    databricks bundle run cyber360_grant_reader_role -t dev $VARS
-   databricks bundle run cyber360_app -t dev $VARS          # app live
+   databricks bundle run cyber_unified_app -t dev $VARS          # app live
    ```
 
-5. **Find the running app** under **Compute → Apps → `cyber360-dashboard`** (its
+5. **Find the running app** under **Compute → Apps → `cyber-unified`** (its
    URL is also printed by step 5).
 
 > After a `git add app/frontend/dist` rebuild or any code change, **Pull** the Git
@@ -174,7 +174,7 @@ databricks bundle deploy -t dev --var load_synthetic_data=false
 
 Access is driven by **two bring-your-own Databricks groups** so you manage
 **group membership only** — never per-user permissions. Add someone to a group
-and their access to every Cyber360 resource follows; remove them and it's gone.
+and their access to every CyberUnified resource follows; remove them and it's gone.
 
 | Group (variable) | Default name | Gets |
 |---|---|---|
@@ -242,10 +242,10 @@ else is a plain *variable*.
 | **Secret** | `DATABRICKS_CLIENT_SECRET` | The SP's OAuth **client secret** (from step 1). The only secret. |
 | Variable | `DATABRICKS_HOST` | Target workspace URL, e.g. `https://<ws>.cloud.databricks.com` |
 | Variable | `DATABRICKS_CLIENT_ID` | The SP's application (client) ID |
-| Variable | `CYBER360_CATALOG` | Your UC catalog |
-| Variable | `CYBER360_WAREHOUSE_ID` | SQL warehouse id (Genie only) |
-| Variable | `CYBER360_OWNER_ROLE` | Lakebase owner role id (see Deploy) |
-| Variable | `CYBER360_LAKEBASE_PROJECT` | Lakebase project id (e.g. `cyber360-lakebase`) |
+| Variable | `CYBERUNIFIED_CATALOG` | Your UC catalog |
+| Variable | `CYBERUNIFIED_WAREHOUSE_ID` | SQL warehouse id (Genie only) |
+| Variable | `CYBERUNIFIED_OWNER_ROLE` | Lakebase owner role id (see Deploy) |
+| Variable | `CYBERUNIFIED_LAKEBASE_PROJECT` | Lakebase project id (e.g. `cyber-unified`) |
 
 > The Databricks CLI auto-detects `DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` +
 > `DATABRICKS_CLIENT_SECRET` and performs the OAuth M2M token exchange itself —
@@ -300,7 +300,7 @@ make generate-data
 
 ## Onboard a new domain (the headline how-to)
 
-Adding a security domain is a **pure `app/cyber360.yaml` edit** — no page, route,
+Adding a security domain is a **pure `app/cyber-unified.yaml` edit** — no page, route,
 or endpoint code. The pipeline builds the metric view + aggregates, a synced
 table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
 
@@ -324,7 +324,7 @@ table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
 
      metric_view:
        name: mv_endpoint
-       source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.endpoint"
+       source_table: "${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}.endpoint"
        comment: "Endpoint protection posture over the device inventory."
        dimensions:
          - name: day
@@ -342,7 +342,7 @@ table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
    ```
 
 2. (Optional) reference a measure in `top_line_kpis` to add a scorecard tile.
-3. `databricks bundle deploy -t dev && databricks bundle run cyber360_pipeline -t dev`.
+3. `databricks bundle deploy -t dev && databricks bundle run cyber_unified_pipeline -t dev`.
 
 That's it — nav link, KPI tiles, trend charts, drill-down table, and Genie drawer
 all appear with **zero code**.

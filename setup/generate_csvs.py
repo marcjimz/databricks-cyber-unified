@@ -48,7 +48,7 @@ def _write_csv(rows: list[dict], path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Cyber360 OCSF demo CSVs.")
+    parser = argparse.ArgumentParser(description="Generate CyberUnified OCSF demo CSVs.")
     parser.add_argument(
         "--out",
         default=str(_REPO_ROOT / "data"),

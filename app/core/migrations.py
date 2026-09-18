@@ -21,7 +21,7 @@ import logging
 import re
 from pathlib import Path
 
-from core.config import Cyber360Config
+from core.config import CyberUnifiedConfig
 from core.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def _discover() -> list[tuple[str, Path]]:
     return found
 
 
-async def run_migrations(config: Cyber360Config) -> None:
+async def run_migrations(config: CyberUnifiedConfig) -> None:
     """Apply every pending migration, in order, exactly once.
 
     Idempotent: already-applied versions (recorded in ``schema_migrations``) are

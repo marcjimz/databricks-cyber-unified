@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from core.config import Cyber360Config
+from core.config import CyberUnifiedConfig
 from core.dependencies import get_config
 from models.common import build_meta
 
@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/config")
-async def get_dashboard_config(config: Cyber360Config = Depends(get_config)):
+async def get_dashboard_config(config: CyberUnifiedConfig = Depends(get_config)):
     """Return the dashboard configuration for the frontend."""
     domains = []
     for d in config.domains:

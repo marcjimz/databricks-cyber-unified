@@ -10,7 +10,7 @@
       // wrong color scheme. Mirrors the tiny theme store in src/hooks/useTheme.
       (function () {
         try {
-          var stored = localStorage.getItem("cyber360-theme")
+          var stored = localStorage.getItem("cyber-unified-theme")
           var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
           var dark = stored ? stored === "dark" : prefersDark
           if (dark) document.documentElement.classList.add("dark")

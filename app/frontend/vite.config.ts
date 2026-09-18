@@ -2,7 +2,7 @@ import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import { fileURLToPath, URL } from "node:url"
 
-// Vite config for the Cyber360 SPA.
+// Vite config for the CyberUnified SPA.
 // - `@` alias mirrors the shadcn/Next path alias so ported components resolve.
 // - Dev proxy forwards `/api/*` to the FastAPI backend so `make dev` works.
 // - Production build emits to `dist/`, which FastAPI mounts at `/`.

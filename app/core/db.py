@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
-    from core.config import Cyber360Config
+    from core.config import CyberUnifiedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ _pghost: str | None = None
 # Credential + DSN helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_host(config: Cyber360Config) -> str:
+def _resolve_host(config: CyberUnifiedConfig) -> str:
     """Resolve (and cache) the Lakebase Postgres host for the bound endpoint.
 
     The autoscaling ``postgres`` app binding does not inject PGHOST, so the host
@@ -65,7 +65,7 @@ def _resolve_host(config: Cyber360Config) -> str:
 
 
 def _lakebase_dsn(
-    config: Cyber360Config,
+    config: CyberUnifiedConfig,
     password: str,
     *,
     search_path: str = "",
@@ -96,7 +96,7 @@ def _lakebase_dsn(
     return dsn
 
 
-def _sp_credential(config: Cyber360Config) -> str:
+def _sp_credential(config: CyberUnifiedConfig) -> str:
     """Mint a Lakebase token as the app SERVICE PRINCIPAL.
 
     A bare ``WorkspaceClient()`` authenticates with the app's ambient OAuth env
@@ -117,7 +117,7 @@ def _sp_credential(config: Cyber360Config) -> str:
 # App-level pool (state tables)
 # ---------------------------------------------------------------------------
 
-async def init_lakebase_pool(config: Cyber360Config) -> None:
+async def init_lakebase_pool(config: CyberUnifiedConfig) -> None:
     """Open the app-level connection pool if Lakebase is enabled."""
     global _pool
 

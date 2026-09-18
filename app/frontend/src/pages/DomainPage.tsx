@@ -46,7 +46,7 @@ import type {
  * renders EVERYTHING from `/api/config` + `/api/metrics/:key` -- KPIs, whatever
  * trend series and breakdowns the domain returns, the Metric View definitions,
  * and a drill-down table. There is deliberately NO per-domain branching
- * (`if key === "identity"`) in this file: adding a domain in cyber360.yaml makes
+ * (`if key === "identity"`) in this file: adding a domain in cyber-unified.yaml makes
  * `/domain/<newkey>` render with zero page-code changes (SKILL.md §3).
  */
 
@@ -144,7 +144,7 @@ function formatCell(value: string | number | boolean | null, format: string): st
  * Generic, fully config-driven drill-down table. Columns and filter tabs come
  * from the domain's `detailTable` config (via /api/config); rows come from
  * /api/{domain}/rows. There is NO per-domain branching here -- adding a table
- * to a new domain is a pure cyber360.yaml edit.
+ * to a new domain is a pure cyber-unified.yaml edit.
  */
 function DetailTableSection({
   domainKey,

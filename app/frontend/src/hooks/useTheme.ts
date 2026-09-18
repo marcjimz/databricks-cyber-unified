@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 
 type Theme = "light" | "dark"
 
-const STORAGE_KEY = "cyber360-theme"
+const STORAGE_KEY = "cyber-unified-theme"
 
 function readInitialTheme(): Theme {
   if (typeof document !== "undefined" && document.documentElement.classList.contains("dark")) {

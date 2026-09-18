@@ -46,9 +46,9 @@ jobs:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          CATALOG: ${{ vars.CYBER360_CATALOG }}
-          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
-          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+          CATALOG: ${{ vars.CYBERUNIFIED_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBERUNIFIED_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBERUNIFIED_OWNER_ROLE }}
         run: |
           databricks bundle deploy -t prod \
             --var catalog="$CATALOG" \
@@ -63,10 +63,10 @@ jobs:
           DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
           DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
           DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          CATALOG: ${{ vars.CYBER360_CATALOG }}
-          WAREHOUSE_ID: ${{ vars.CYBER360_WAREHOUSE_ID }}
-          OWNER_ROLE: ${{ vars.CYBER360_OWNER_ROLE }}
+          CATALOG: ${{ vars.CYBERUNIFIED_CATALOG }}
+          WAREHOUSE_ID: ${{ vars.CYBERUNIFIED_WAREHOUSE_ID }}
+          OWNER_ROLE: ${{ vars.CYBERUNIFIED_OWNER_ROLE }}
         run: |
           VARS="--var catalog=$CATALOG --var warehouse_id=$WAREHOUSE_ID --var lakebase_owner_role=$OWNER_ROLE"
-          databricks bundle run cyber360_data_plane -t prod $VARS
-          databricks bundle run cyber360_app -t prod $VARS
+          databricks bundle run cyber_unified_data_plane -t prod $VARS
+          databricks bundle run cyber_unified_app -t prod $VARS

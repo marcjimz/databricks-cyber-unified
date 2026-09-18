@@ -1,6 +1,6 @@
--- Cyber360 UC Metric View: Phishing & Email Security.
+-- CyberUnified UC Metric View: Phishing & Email Security.
 -- This file is the source of truth for the metric-view definition and owns its
--- own lifecycle as a DAB asset. It is executed by the cyber360_data_plane job
+-- own lifecycle as a DAB asset. It is executed by the cyber_unified_data_plane job
 -- via a sql_task; :catalog, :schema and :source_table are supplied as task
 -- parameters so the file carries no hardcoded location.
 --
@@ -19,7 +19,7 @@
 --   * The rate measures are scaled *100: the app renders `format: percent` as a
 --     0-100 value, whereas the raw rate expressions are 0-1 fractions.
 --   * Measure exprs are written in PORTABLE SQL (CASE WHEN / NULLIF / standard
---     division -- no try_divide/COUNT_IF) so the IDENTICAL string in cyber360.yaml
+--     division -- no try_divide/COUNT_IF) so the IDENTICAL string in cyber-unified.yaml
 --     evaluates the same in Spark (here) and in DuckDB (the local seed provider).
 --   * Region / Campaign Name are surfaced as named dimensions; every other source
 --     column comes through the `source.* EXCEPT (...)` wildcard.

@@ -23,7 +23,7 @@ pytest.importorskip("duckdb")
 
 @pytest.fixture
 def config():
-    return load_config(Path(__file__).parent.parent / "cyber360.yaml")
+    return load_config(Path(__file__).parent.parent / "cyber-unified.yaml")
 
 
 def test_scorecard_computes_measures_from_config(config):

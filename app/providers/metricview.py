@@ -5,7 +5,7 @@ Unity Catalog **metric view** (``mv_*``) directly on the SQL Warehouse with the
 ``MEASURE()`` function -- no reverse-ETL, no flattened aggregate tables. The
 metric view is the single semantic source of the measure math; this provider
 only *reads* it and applies presentation (format, RAG thresholds) from
-cyber360.yaml. Metric-view **materialization** transparently accelerates these
+cyber-unified.yaml. Metric-view **materialization** transparently accelerates these
 reads (aggregate-aware query rewriting) with no query changes.
 
 Auth: reads run **per-user (OBO)** -- the caller's token is threaded through to
@@ -27,7 +27,7 @@ import logging
 from typing import Any
 
 from core.config import (
-    Cyber360Config,
+    CyberUnifiedConfig,
     _format_change,
     build_change,
     format_measure_value,
@@ -58,7 +58,7 @@ class MetricViewProvider:
 
     source = "metricview"
 
-    def __init__(self, config: Cyber360Config, token: str = ""):
+    def __init__(self, config: CyberUnifiedConfig, token: str = ""):
         self.config = config
         # Per-user OBO: the caller's token authenticates the warehouse queries so
         # UC permissions are enforced per user. Falls back to ambient auth if empty.
@@ -100,7 +100,7 @@ class MetricViewProvider:
             )
         return f"`day` >= current_date() - INTERVAL {period} DAY"
 
-    # ── KPI construction (mirrors the presentation contract in cyber360.yaml) ──
+    # ── KPI construction (mirrors the presentation contract in cyber-unified.yaml) ──
 
     def _build_kpi(
         self,
