@@ -105,14 +105,13 @@ domains:
         - count
 
     metric_view:
+      # NAME of the ALREADY-PUBLISHED UC metric view, resolved inside
+      # ${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}. This is the entire
+      # per-environment contract: point it at whatever metric view the target
+      # publishes (the name may differ per environment) and the app reads it --
+      # both the KPI MEASURE()s and the drill-down rows. The app CREATES NOTHING,
+      # so it needs no privilege on whatever the view is built over.
       name: phishing_detail_metric_view
-      # The synthetic gold table (unqualified last segment `phishing_detail` is the
-      # pipeline's gold-table name when load_synthetic_data=true). The app's /rows
-      # drill-down does NOT read this directly -- it reads the `phishing_source`
-      # pass-through view in the deploy catalog/schema (see MetricViewProvider),
-      # which exists on every target and resolves to the right underlying data
-      # (synthetic gold on sandbox, conn_cyberarch.dbo.phishing_detail on edp_dev).
-      source_table: "${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}.phishing_detail"
       comment: >-
         Phishing & email-security measures over simulated-phishing campaign
         events (click, report, and no-action outcomes).
@@ -173,9 +172,10 @@ domains:
           caption: "Simulated sends"
 
     # Config-driven drill-down table. The generic /api/phishing/rows endpoint
-    # SELECTs these columns from metric_view.source_table (per-user OBO), applies
-    # the chosen filter's WHERE, and orders by order_by. Adding/removing a column
-    # or filter is a pure config edit -- no bespoke row model or endpoint.
+    # SELECTs these columns from the SAME metric view named above (per-user OBO),
+    # applies the chosen filter's WHERE, and orders by order_by. Adding/removing a
+    # column or filter is a pure config edit -- no bespoke row model or endpoint.
+    # The columns must exist on the metric view.
     detail_table:
       label: "Campaign events"
       order_by: "eventtimestamp DESC"

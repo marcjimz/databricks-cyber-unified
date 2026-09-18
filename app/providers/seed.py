@@ -93,8 +93,15 @@ class SeedProvider:
         return self._con
 
     def _gold_table_name(self, domain: DomainConfig) -> str:
-        """Unqualified gold-table name from the domain's source_table (last part)."""
-        return domain.metric_view.source_table.split(".")[-1]
+        """Unqualified table name to register the synthetic rows under, in DuckDB.
+
+        Derived from the domain's `gold_table` when set, else from the domain key
+        (e.g. `phishing` -> `phishing_detail`). This is LOCAL-ONLY bookkeeping --
+        it names an in-memory DuckDB table, not anything in Unity Catalog. (It used
+        to read metric_view.source_table, which was removed: the app now reads an
+        already-published metric view by name and never knows its source.)
+        """
+        return domain.gold_table or f"{domain.key}_detail"
 
     def _ensure_registered(self, domain: DomainConfig) -> str | None:
         """Materialize the domain's synthetic gold rows into a DuckDB table named

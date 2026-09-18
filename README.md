@@ -18,26 +18,38 @@ YAML edit, not a code change.
 
 ## Architecture
 
-One Databricks Asset Bundle (`databricks.yml`) deploys two parts:
+**The app READS an already-published Unity Catalog metric view. It creates
+nothing in your data layer.**
 
-**Data plane.** A **Lakeflow pipeline** reads your OCSF gold tables, builds a
-**UC Metric View** per domain, and rolls the measures into two tables:
-`agg_daily` (daily trends) and `agg_rollup` (30/60/90-day KPI tiles). Synced
-tables copy those into **Lakebase** (managed Postgres) as read-only.
+**Data plane — yours, not ours.** You already have a **UC Metric View**; the app
+is simply told its **name** (`domains[].metric_view.name`, resolved inside
+`${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}`). That name may differ per
+environment — repointing the app at another workspace is a one-line YAML edit.
+The bundle deploys no pipeline, no job, and no DDL against your data, so the app
+needs **no privilege on whatever the view is built over** (e.g. a federated
+`conn_cyberarch` source catalog).
 
-**App plane (FastAPI + React).** The app reads the KPIs from Lakebase and serves
-the dashboard. It connects to Postgres as the app's service principal — which
-inherits read access through a Databricks reader group (see [Deploy](#deploy)).
-It also owns three state tables (preferences, chats, sessions) it creates itself
-at startup. SQL Warehouse / Genie are used **only** for the interactive Genie
-drawer, never for KPI reads.
+**App plane (FastAPI + React).** The app queries that metric view natively with
+`MEASURE()` on the **SQL Warehouse**, per-user **on-behalf-of** — so Unity Catalog
+permissions are enforced for each viewer. The drill-down table SELECTs its
+configured columns from the **same** metric view. **Lakebase** (managed Postgres)
+serves only the app's own read-write state — three tables (preferences, chats,
+sessions) it creates itself at startup.
 
 ```
-OCSF gold ─▶ Lakeflow pipeline ─▶ UC Metric Views ─▶ agg_daily / agg_rollup ─▶ (synced) ─▶ Lakebase
-                                                                                              │
-React SPA ─▶ FastAPI ─▶ LakebaseProvider (KPI reads) ─────────────────────────────────────────┘
-                     └─ SeedProvider (in-memory OCSF synthesis; zero workspace deps, local/demo)
+your published UC Metric View ─┐
+                               ├─▶ MEASURE() on SQL Warehouse (per-user OBO) ─┐
+                (drill-down rows: SELECT from the same view) ─────────────────┤
+                                                                              ▼
+                                          React SPA ─▶ FastAPI ─▶ MetricViewProvider
+                                                              └─ SeedProvider (in-memory
+                                                                 synthesis; zero workspace
+                                                                 deps, local/demo)
+Lakebase (managed Postgres) ──▶ app state only: preferences · chats · sessions
 ```
+
+One Databricks Asset Bundle (`databricks.yml`) deploys the app, the Lakebase
+project, and one **gated, sandbox-only** seed job — nothing else.
 
 ---
 
@@ -45,25 +57,27 @@ React SPA ─▶ FastAPI ─▶ LakebaseProvider (KPI reads) ──────�
 
 - **Databricks CLI ≥ 0.297** (`databricks --version`) authenticated to the target
   workspace (`databricks auth login`). Older CLIs may hard-error on the newer
-  Lakebase resource types this bundle uses (`postgres_projects`, `postgres_databases`,
-  `postgres_synced_tables`); see the note under **Deploy** about validation warnings.
+  Lakebase resource types this bundle uses (`postgres_projects`, `postgres_branches`,
+  `postgres_endpoints`, `postgres_databases`); see the note under **Deploy** about
+  validation warnings.
 - **Python 3.11+** and **Node 20+** (for local dev / building the SPA).
-- Workspace permission to create a Lakebase project, pipeline, synced tables,
-  schema/volume, and an app.
+- Workspace permission to create a Lakebase project and an app.
 - **Bring-your-own prerequisites** (the bundle does *not* create these):
-  - The **UC catalog** (`var.catalog`) must already exist and be owned/accessible by
-    the deploying identity — the bundle only creates the schema inside it.
-  - The **reader group** (`var.lakebase_reader_group`, default `cyber-unified-lakebase-readers`)
-    must already exist as a Databricks group, **and the app service principal must be
-    a member.** The KPI read path connects as this group's Postgres role.
+  - A **published UC Metric View** — the app reads it, it never builds it. Name it in
+    `domains[].metric_view.name`. Every `detail_table` column must exist on that view.
+  - The **UC catalog and schema** (`var.catalog` / `var.schema`) that the metric view
+    lives in must already exist and be readable by the deploying identity. The bundle
+    creates neither.
+  - Users need UC read access to that view — see [Access control](#access-control-manage-the-group-not-users).
 
 ---
 
 ## Deploy
 
 All workspace-specific values (catalog, schema, warehouse id, Lakebase topology,
-reader group, Genie embed URLs) are **DAB variables** — override them at deploy
-time, never hardcode. Defaults live in `databricks.yml`.
+Genie embed URLs) are **DAB variables** — override them at deploy time, never
+hardcode. Defaults live in `databricks.yml`. The metric view is named in
+`app/cyber-unified.yaml`, not as a variable.
 
 ### Set these first (they are NOT hardcoded to your workspace)
 
@@ -71,46 +85,36 @@ time, never hardcode. Defaults live in `databricks.yml`.
 |------|-----|-----|
 | **Workspace host** | Deploy from a Databricks **Git folder** (targets that workspace automatically), or set `DATABRICKS_HOST` / use `databricks auth login` / `-p <profile>`. | `workspace.host` is an auth field — the CLI resolves it *before* variables, so it can't be a `${var}` and is intentionally omitted from `databricks.yml`. It resolves from the ambient environment. |
 | **`lakebase_owner_role`** | `--var lakebase_owner_role=<your-role-id>` | The Postgres role that OWNS the app database. Lakebase derives it from the **deploying identity's** email (dots → hyphens), e.g. `jane.doe@corp.com` → `jane-doe`. The default (`marcin-jimenez`) is the original author's — **override it for any other deployer.** |
-| **`catalog`** (and `schema` if desired) | `--var catalog=<your_catalog>` | The UC catalog is a bring-your-own prerequisite (see above). |
-| **`warehouse_id`** | `--var warehouse_id=<id>` | Only used by the interactive Genie drawer, never KPI reads. |
-| **`lakebase_reader_group`** | `--var lakebase_reader_group=<group>` if not using the default | Must be an existing Databricks group whose members include the app SP (see Prerequisites). |
+| **`catalog`** (and `schema` if desired) | `--var catalog=<your_catalog>` | Where your metric view lives — a bring-your-own prerequisite (see above). |
+| **`warehouse_id`** | `--var warehouse_id=<id>` | Runs the metric-view KPI reads (per-user OBO) and the Genie drawer. |
 
-### Deploy flow (two-phase — required, by design)
+### Deploy flow
 
-Synced tables can't bind until their source aggregate tables exist, so the first
-`deploy` **partially fails on the synced tables — that is expected** — you run the
-pipeline, then deploy again. Substitute your own `--var` overrides throughout:
+`make deploy <env>` is **validate → deploy → run app**. Nothing is created in the
+data layer, so a deploy succeeds or fails on **deployment alone** — a data-layer or
+UC-grant problem can no longer fail it.
+
+```bash
+make deploy sandbox     # FEVM sandbox
+make deploy edp_dev     # Azure EDP DEV, reads the customer's published metric view
+```
+
+On a **fresh** workspace use `make setup <env>` instead — it deploys **twice**
+(Lakebase provisions the project/app asynchronously, so dependent objects settle on
+the second pass), then runs the app. Or drive the CLI directly, substituting your
+own `--var` overrides:
 
 ```bash
 # Assume host comes from a Git folder / DATABRICKS_HOST / active profile.
 export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
 
-# 1. Phase-1 deploy — creates Lakebase project, schema, pipeline, app.
-#    The synced tables FAIL here because agg_daily/agg_rollup don't exist yet. EXPECTED.
-databricks bundle deploy -t dev $VARS
-
-# 2. Build the data plane — pipeline (gold + agg_daily/agg_rollup) then the metric views.
-databricks bundle run cyber_unified_data_plane -t dev $VARS
-
-# 3. Phase-2 deploy — now the synced tables succeed (their sources exist). "Deployment complete!"
-databricks bundle deploy -t dev $VARS
-
-# 4. Grant the reader group read on the synced schema (the app SP inherits it via
-#    group membership). MUST run after phase-2 created the synced tables in Postgres.
-databricks bundle run cyber360_grant_reader_role -t dev $VARS
-
-# 5. Start the app (prints the app URL).
-databricks bundle run cyber_unified_app -t dev $VARS
+databricks bundle validate -t databricks_sandbox $VARS
+databricks bundle deploy   -t databricks_sandbox $VARS   # on a fresh workspace, run this twice
+databricks bundle run cyber_unified_app -t databricks_sandbox $VARS   # start the app (prints the URL)
 ```
 
-> **Why the grant step (4) exists:** Databricks does not propagate UC / `uc_securable`
-> grants down to Postgres role privileges, and the app reads the synced aggregates over
-> a *direct* psycopg connection. Skipping step 4 leaves the metrics API returning 500 /
-> "Failed to load data" even though everything deployed. The grant is idempotent — safe
-> to re-run, and covers future re-syncs via `ALTER DEFAULT PRIVILEGES`.
-
 > **Validation warnings are harmless.** `databricks bundle validate` emits
-> `unknown field: replace_existing / postgres_databases / postgres_synced_tables`
+> `unknown field: replace_existing / postgres_databases`
 > on current CLI builds — the bundled JSON schema lags the Lakebase API. These fields
 > are valid and deploy correctly; **do not remove them to silence the warnings** (that
 > breaks the deploy). Upgrade the CLI to clear them.
@@ -128,43 +132,56 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
 3. **Open a terminal in the workspace.** Use a notebook's **web terminal**
    (attach any cluster → the `%sh`/terminal), or a compute node's terminal, then
    `cd` into the Git folder (e.g. `cd /Workspace/Repos/<you>/databricks-cyber-unified`).
-4. **Run the same two-phase flow** as above — the CLI is preinstalled on
-   Databricks compute, so the `databricks bundle …` commands work as-is:
+4. **Run the same flow** as above — the CLI is preinstalled on Databricks compute,
+   so the `databricks bundle …` commands work as-is. `make deploy <env>` works too
+   (it needs no npm/node: the built SPA is committed):
 
    ```bash
    export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
-   databricks bundle deploy -t dev $VARS                    # phase 1 (synced tables fail — expected)
-   databricks bundle run cyber_unified_data_plane -t dev $VARS   # build aggregates
-   databricks bundle deploy -t dev $VARS                    # phase 2 (synced tables succeed)
-   databricks bundle run cyber360_grant_reader_role -t dev $VARS
-   databricks bundle run cyber_unified_app -t dev $VARS          # app live
+   databricks bundle validate -t databricks_sandbox $VARS
+   databricks bundle deploy   -t databricks_sandbox $VARS   # twice on a fresh workspace
+   databricks bundle run cyber_unified_app -t databricks_sandbox $VARS   # app live
    ```
 
 5. **Find the running app** under **Compute → Apps → `cyber-unified`** (its
-   URL is also printed by step 5).
+   URL is also printed by the last step).
 
 > After a `git add app/frontend/dist` rebuild or any code change, **Pull** the Git
 > folder again before re-running `bundle deploy` so the workspace copy is current.
 
-### Targets: `dev` and `prod`
+### Targets
 
-The bundle defines two targets: **`dev`** (the working environment for building +
-testing) and **`prod`** (the released app, promoted via `promote.yml`). Both
-validate. One prod-specific setting makes `mode: production` happy:
-- `prod` sets an explicit `workspace.root_path` (a single shared copy, not
-  per-user-prefixed like dev).
+The bundle defines three targets, and the Makefile takes the env as a **positional
+word** (`make deploy sandbox`):
 
-> A `tst`/staging tier was intentionally dropped for now — one dev + prod keeps
-> the flow simple. Add a `tst` target later if a shared integration env is needed.
+| Env word | `databricks.yml` target | What it is |
+|---|---|---|
+| `sandbox` | `databricks_sandbox` | Default. FEVM sandbox, **synthetic** — the only place the seed / metric-view emulation runs. |
+| `edp_dev` | `edp_dev` | Azure EDP DEV, reads the **real** published metric view. |
+| `prod` | `prod` | The released app (promoted via `promote.yml`); sets an explicit `workspace.root_path` for `mode: production`. |
 
-**Bring-your-own-data.** The bundled synthetic data is a convenience, not a
-requirement. The `load_synthetic_data` variable (**default `true`**) gates the
-pipeline's demo-load stage. Point the config at your own OCSF gold tables and
-flip it off:
+**Bring-your-own-data is the DEFAULT.** The app reads the metric view you already
+publish — point `domains[].metric_view.name` at it and deploy. Nothing else is
+needed, and no synthetic data is ever written to a real target: the
+`load_synthetic_data` variable (**default `false`**) gates the seed job, which is a
+no-op unless explicitly turned on, and turning it on is a sandbox-only step.
+
+### Sandbox-only utilities (emulating a real workspace)
+
+On the FEVM sandbox there is no customer metric view to read, so two guarded
+targets **emulate** one. Neither is a bundle resource, a deploy step, or safe on a
+real target:
 
 ```bash
-databricks bundle deploy -t dev --var load_synthetic_data=false
+make seed sandbox               # write the synthetic gold table (cyber_unified_seed_job, gated)
+make sandbox-metricview sandbox # publish a metric view over that gold
 ```
+
+`make sandbox-metricview` applies `setup/sandbox/phishing_source.sql` +
+`setup/sandbox/mv_phishing.sql` from the CLI (via
+`setup/sandbox/apply_metricview.py`) and **hard-refuses any non-sandbox target**,
+because those files issue `CREATE ... VIEW` DDL. On a real workspace the metric view
+already exists and is owned by you — just name it in the config.
 
 ---
 
@@ -176,16 +193,16 @@ and their access to every CyberUnified resource follows; remove them and it's go
 
 | Group (variable) | Default name | Gets |
 |---|---|---|
-| `manage_group` | `DPG_CYBER360_MANAGE` | **CAN_MANAGE** on the app, data-plane job, and pipeline |
-| `user_group` | `DPG_CYBER360_USER` | **CAN_USE** on the app; **CAN_VIEW** on the job + pipeline |
+| `manage_group` | `DPG_CYBER360_MANAGE` | **CAN_MANAGE** on the app + the seed job |
+| `user_group` | `DPG_CYBER360_USER` | **CAN_USE** on the app; **CAN_VIEW** on the seed job |
 
 These are **workspace** permissions and are fully **declarative in the bundle** —
-a top-level `permissions:` block propagates to the app/job/pipeline, and the app
-adds the `CAN_USE` level for `user_group`. Deploying to another workspace applies
-the identical model. Override the names per deploy if your groups differ:
+each resource (the app, the seed job) carries its own `permissions:` block.
+Deploying to another workspace applies the identical model. Override the names per
+deploy if your groups differ:
 
 ```bash
-databricks bundle deploy -t dev \
+databricks bundle deploy -t databricks_sandbox \
   --var manage_group=MY_ADMINS --var user_group=MY_USERS
 ```
 
@@ -211,6 +228,10 @@ databricks bundle deploy -t dev \
    Without these grants the app opens for `user_group` members but KPI tiles
    return an access error (the per-user OBO query is denied by Unity Catalog).
 
+   > Users need read on the **metric view** only. Because the app never builds the
+   > view, neither the app nor its service principal needs any privilege on whatever
+   > the view is built over (e.g. a federated source catalog).
+
 ---
 
 ## CI/CD & feature environments
@@ -229,9 +250,10 @@ else is a plain *variable*.
   (or reuse the app's SP). Note its **Application (client) ID**.
 - On that SP → **Secrets → Generate secret**. Copy the **Client secret** *and*
   the **Client ID** shown — the secret is displayed only once.
-- Grant the SP what a deploy needs: workspace access (CAN_USE), `CAN_MANAGE` on
-  the app + bundle resources, `USE CATALOG`/`CREATE SCHEMA` on the catalog, and
-  membership in the Lakebase reader group. (It's the identity CI deploys as.)
+- Grant the SP what a deploy needs: workspace access (CAN_USE) and `CAN_MANAGE` on
+  the app + bundle resources. (It's the identity CI deploys as.) It needs **no**
+  data-layer privilege — the deploy creates nothing in Unity Catalog, and KPI reads
+  run per-user OBO.
 
 **2. Configure the repo** (**Settings → Secrets and variables → Actions**):
 
@@ -287,8 +309,8 @@ make build          # build the React SPA into app/frontend/dist
 make dev            # uvicorn on :8000 with the seed provider
 ```
 
-Regenerate the bundled demo CSVs (for inspection only — the pipeline generates
-the same gold in-code):
+Regenerate the bundled demo CSVs (for inspection only — the seeder generates the
+same gold in-code):
 
 ```bash
 make generate-data
@@ -299,10 +321,10 @@ make generate-data
 ## Onboard a new domain (the headline how-to)
 
 Adding a security domain is a **pure `app/cyber-unified.yaml` edit** — no page, route,
-or endpoint code. The pipeline builds the metric view + aggregates, a synced
-table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
+or endpoint code. You point it at a metric view your workspace already publishes,
+and the generic `/domain/<key>` page renders it.
 
-1. Add a `domains[]` entry:
+1. Add a `domains[]` entry naming the published view:
 
    ```yaml
    - key: endpoint
@@ -321,8 +343,10 @@ table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
        highlights: [edr_coverage, hosts_unprotected]
 
      metric_view:
-       name: mv_endpoint
-       source_table: "${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}.endpoint"
+       # The NAME of the metric view your workspace ALREADY publishes, resolved
+       # inside ${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}. The app reads it
+       # and creates nothing. This name may differ per environment.
+       name: endpoint_detail_metric_view
        comment: "Endpoint protection posture over the device inventory."
        dimensions:
          - name: day
@@ -339,12 +363,18 @@ table lands them in Lakebase, and the generic `/domain/<key>` page renders it.
            caption: "Target: 100%"
    ```
 
-2. (Optional) reference a measure in `top_line_kpis` to add a scorecard tile.
-3. `make deploy sandbox` (builds the metric views). On the sandbox, add
-   `make seed sandbox` first if the domain needs synthetic gold to read.
+2. (Optional) add a `detail_table` — its `columns` must exist on that metric view,
+   since the drill-down SELECTs them from the same view.
+3. (Optional) reference a measure in `top_line_kpis` to add a scorecard tile.
+4. `make deploy <env>`.
 
 That's it — nav link, KPI tiles, trend charts, drill-down table, and Genie drawer
 all appear with **zero code**.
+
+> **On the sandbox only**, where no published view exists, add a
+> `setup/sandbox/mv_<key>.sql` to emulate one locally, then run
+> `make seed sandbox` + `make sandbox-metricview sandbox`. That is a dev
+> convenience — it is never part of a deploy or of a real environment.
 
 ### Scale metrics within a domain
 
@@ -360,14 +390,16 @@ RAG thresholds. Reference it from `health` or `top_line_kpis`, then redeploy.
 | Key | Purpose |
 |-----|---------|
 | `org` | Org name + logo shown in the shell. |
-| `data_source` | `catalog`, `schema`, `warehouse_id` (Genie only), `provider` (`seed`\|`lakebase`). |
-| `lakebase` | Instance/database, `synced_tables` (read-only aggregates), `state_tables` (app-owned). |
+| `data_source` | `catalog`, `schema`, `warehouse_id`, `provider` (`seed`\|`metricview`). |
+| `lakebase` | Endpoint/database + `state_tables` (app-owned read-write state only). |
 | `data_loading` | `load_synthetic` demo-load gate (mirrors the `load_synthetic_data` DAB var). |
 | `features` | `genie_enabled`, `soc_view_enabled`, `theme_toggle`, `lineage_popover`. |
 | `top_line_kpis` | `{domain, measure, trend, caption}` — executive scorecard tiles. |
-| `domains[]` | `key`, `label`, `short`, `icon`, `description`, `genie`, `health`, `metric_view`. |
-| `metric_view` | `name`, `source_table`, `comment`, `dimensions[]`, `measures[]`. |
+| `domains[]` | `key`, `label`, `short`, `icon`, `description`, `genie`, `health`, `metric_view`, `detail_table`, optional `gold_table`. |
+| `metric_view` | `name` (**the already-published view — the whole per-env contract**), `comment`, `dimensions[]`, `measures[]`. |
 | measure fields | `name`, `label`, `expression`, `comment`, `format` (percent\|count\|days\|hours\|score), `goal` (higher\|lower), `green`/`amber` thresholds, `caption`, optional `fixed_status`, `trend`. |
+| `detail_table` | `label`, `order_by`, `page_size`, `columns[]`, `filters[]` — SELECTed from the SAME metric view, so every column must exist on it. |
+| `gold_table` | **Optional, LOCAL/sandbox bookkeeping only** — names the synthetic gold table (defaults to `<key>_detail`). Not used by the metric-view read path. |
 | `health` | `score_measures[]` (rollup score), `highlights[]` (surfaced tiles). |
 | `genie` | `space_id`, `embed_url`, `starters[]`. |
 
@@ -375,12 +407,16 @@ RAG thresholds. Reference it from `health` or `top_line_kpis`, then redeploy.
 
 ## Verification checklist
 
-- [ ] `databricks bundle validate -t dev` → `Validation OK!`
+- [ ] `make validate <env>` → `Validation OK!`
 - [ ] `make build` produces `app/frontend/dist/`.
-- [ ] Pipeline run materializes `agg_daily` / `agg_rollup`; synced tables land in Lakebase.
-- [ ] **Reader grant:** after `cyber360_grant_reader_role`, KPIs load (HTTP 200); skip it and the metrics API 500s.
+- [ ] `pytest app/tests` passes — including the architecture guard suite
+      (`app/tests/test_bundle_architecture.py`, 8 tests) that keeps data-layer
+      resources out of the bundle.
+- [ ] `make deploy <env>` succeeds on **deployment alone** — it touches nothing in the data layer.
+- [ ] **UC grants:** `user_group` members can `SELECT` the named metric view, so KPIs load (HTTP 200).
 - [ ] **Config onboarding:** add a domain in YAML → `/domain/<key>` renders with no code change.
-- [ ] Reporting-period (30/60/90d) deltas + trend charts read from the synced aggregates.
+- [ ] Reporting-period (30/60/90d) deltas + trend charts read from the metric view.
+- [ ] Drill-down rows load — every `detail_table` column exists on the metric view.
 - [ ] Preferences + chats persist across sessions (app-owned state tables).
 
 ---

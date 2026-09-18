@@ -44,30 +44,76 @@ def test_no_pipeline_resource(bundle: dict) -> None:
     )
 
 
-def test_data_plane_builds_no_data(bundle: dict) -> None:
-    """The data-plane job must only build VIEWS, so it is target-agnostic.
+def test_bundle_creates_nothing_in_the_data_layer(bundle: dict) -> None:
+    """The bundle must not run DDL. We standardize on reading an EXISTING metric view.
 
-    Real-data targets have their own gold tables. If a data-building task is
-    chained in front of the metric views, those targets cannot run the data plane
-    at all -- the failure cascades and the app gets no semantic layer.
+    The app is handed `domains[].metric_view.name` and queries it. Anything that
+    CREATEs in the data layer breaks on a real target: the old data-plane job ran
+    `CREATE OR REPLACE VIEW phishing_source` (needs USE CATALOG on the customer's
+    federated source -> denied) and then re-published a metric view that already
+    existed. Generating a metric view is a SANDBOX UTILITY (setup/sandbox/), never
+    a bundle resource.
     """
-    tasks = bundle["resources"]["jobs"]["cyber_unified_data_plane"]["tasks"]
-    keys = [t["task_key"] for t in tasks]
-
-    assert "build_gold" not in keys, (
-        f"data-plane job builds data again (tasks={keys}). It must only apply "
-        "the metric-view SQL."
+    jobs = bundle["resources"].get("jobs", {})
+    assert "cyber_unified_data_plane" not in jobs, (
+        "the data-plane job is back. The app reads an already-published metric "
+        "view; publishing one is a sandbox utility (make sandbox-metricview)."
     )
-    for task in tasks:
-        assert "pipeline_task" not in task, (
-            f"task {task['task_key']!r} runs a pipeline; the data plane must be "
-            "sql_task-only so it runs identically on a customer workspace."
-        )
-        for dep in task.get("depends_on", []):
-            assert dep["task_key"] in keys, (
-                f"task {task['task_key']!r} depends on {dep['task_key']!r}, "
-                "which no longer exists -- dangling dependency."
+    for name, job in jobs.items():
+        for task in job.get("tasks", []):
+            assert "sql_task" not in task, (
+                f"job {name!r} task {task['task_key']!r} runs a sql_task. The "
+                "bundle must not issue DDL against a customer's data layer."
             )
+            assert "pipeline_task" not in task, (
+                f"job {name!r} task {task['task_key']!r} runs a pipeline."
+            )
+        # No dangling intra-job dependencies.
+        keys = [t["task_key"] for t in job.get("tasks", [])]
+        for task in job.get("tasks", []):
+            for dep in task.get("depends_on", []):
+                assert dep["task_key"] in keys, (
+                    f"job {name!r} task {task['task_key']!r} depends on "
+                    f"{dep['task_key']!r}, which does not exist."
+                )
+
+
+def test_metric_view_is_referenced_by_name_only() -> None:
+    """The app config must name an existing metric view, not describe how to build one.
+
+    `source_table` is what made the app think it owned the underlying data. The
+    per-target contract is a NAME, which may differ per environment.
+    """
+    cfg = yaml.safe_load((REPO / "app" / "cyber-unified.yaml").read_text())
+    for domain in cfg.get("domains", []):
+        mv = domain.get("metric_view", {})
+        assert mv.get("name"), f"domain {domain.get('key')!r} has no metric_view.name"
+        assert "source_table" not in mv, (
+            f"domain {domain.get('key')!r} reintroduced metric_view.source_table. "
+            "The app reads a published metric view BY NAME and must not know or "
+            "depend on what it is built over."
+        )
+
+
+def test_ddl_lives_only_in_the_sandbox_utility_dir() -> None:
+    """CREATE VIEW SQL may exist only under setup/sandbox/ (a dev utility)."""
+    offenders = []
+    for path in REPO.rglob("*.sql"):
+        rel = path.relative_to(REPO)
+        parts = rel.parts
+        if parts[0] in {"node_modules", ".git"} or "node_modules" in parts:
+            continue
+        # app/migrations/** is the app's OWN Lakebase state schema -- allowed.
+        if parts[:2] == ("app", "migrations"):
+            continue
+        if parts[:2] == ("setup", "sandbox"):
+            continue
+        if re.search(r"\bCREATE\s+(OR\s+REPLACE\s+)?VIEW\b", path.read_text(), re.I):
+            offenders.append(str(rel))
+    assert not offenders, (
+        f"view DDL outside setup/sandbox/: {offenders}. Publishing views is a "
+        "sandbox utility, not part of the deployed application."
+    )
 
 
 def test_seed_is_gated_and_defaults_off(bundle: dict) -> None:

@@ -282,7 +282,7 @@ class MetricViewProvider:
         self, domain_key: str, query: DetailQuery
     ) -> DetailRowsResponse:
         """Return a page of the domain's drill-down table by SELECTing the
-        configured columns from its source_table (per-user OBO). Entirely
+        configured columns from the published metric view (per-user OBO). Entirely
         config-driven: columns, the filter's WHERE fragment, and the sort all
         come from the domain's detail_table block."""
         domain = self.config.get_domain(domain_key)
@@ -326,15 +326,17 @@ class MetricViewProvider:
         )
 
     def _resolve_source(self, domain) -> str:
-        """The relation the drill-down SELECTs from: the `phishing_source`
-        pass-through view in the deploy catalog/schema. That view is created next
-        to the metric view (phishing_source.sql) as `SELECT * FROM :source_table`,
-        so it exists on EVERY target and resolves to the right underlying data --
-        synthetic gold on sandbox, the real conn_cyberarch.dbo.phishing_detail on
-        edp_dev -- without the app needing to know the per-target source location.
-        Falls back to the configured source_table if no source view is named."""
-        source_view = getattr(domain.metric_view, "source_view", "") or "phishing_source"
-        return f"{self._catalog}.{self._schema}.{source_view}"
+        """The relation everything reads: the domain's ALREADY-PUBLISHED metric
+        view. Both KPI measures and drill-down rows come from this one name, so
+        the app creates nothing and needs no privilege on the underlying source.
+
+        Previously this pointed at a `phishing_source` pass-through view that the
+        data-plane job created (`SELECT * FROM :source_table`). That indirection
+        required USE CATALOG on the customer's federated source catalog and failed
+        on real-data targets -- and it was unnecessary: the metric view already
+        exists and already exposes the columns. Point metric_view.name at whatever
+        view the environment publishes and the app just reads it."""
+        return self._mv_fqn(domain.metric_view.name)
 
     @staticmethod
     def _filter_where(table, filter_key: str | None) -> str:
