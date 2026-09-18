@@ -7,8 +7,10 @@
 #   postgres_projects     -> Lakebase autoscaling project (managed Postgres) that
 #                            serves the app's read-write STATE only. Auto-creates a
 #                            `production` branch and a `primary` RW endpoint.
-#   postgres_branches     -> the project's `production` branch (replace_existing)
-#   postgres_endpoints    -> the project's `primary` RW endpoint (replace_existing)
+#                            Its `production` branch + `primary` RW endpoint are
+#                            IMPLICIT -- deliberately NOT declared as resources
+#                            (the branch is protected, so declaring it makes DAB
+#                            try to delete something the API refuses to delete).
 #   postgres_databases    -> the logical Postgres database the app connects to
 #   jobs                  -> the GATED synthetic-gold seed (sandbox only)
 #   apps                  -> the FastAPI + React dashboard
@@ -89,14 +91,14 @@ variables:
     description: "SQL Warehouse ID -- used by Genie interactive drawer ONLY, never KPI reads"
     default: ""
   lakebase_project:
-    description: "Lakebase autoscaling project id that serves KPI reads + app state (1-63 chars, lowercase/digits/hyphens)"
+    description: "Lakebase autoscaling project id holding the app's state database (1-63 chars, lowercase/digits/hyphens)"
     default: "cyber-unified"
   lakebase_branch:
-    description: "Lakebase branch id -- the project's auto-created production branch"
+    description: >-
+      Lakebase branch id the DATABASE lives on -- the project's IMPLICIT,
+      auto-created production branch. Not declared as a resource (it is protected;
+      declaring it makes DAB attempt an illegal delete-and-recreate).
     default: "production"
-  lakebase_endpoint:
-    description: "Lakebase endpoint id -- the project's auto-created primary read-write endpoint"
-    default: "primary"
   # ── App connection target (branch/endpoint the APP connects to) ──
   # These default to the managed production branch/endpoint above, so the normal
   # path is unchanged. For an ISOLATED FEATURE deploy, a paired Lakebase branch is
@@ -178,12 +180,25 @@ sync:
     - app/cyber-unified.yaml
 
 resources:
-  # ── Lakebase autoscaling project: managed Postgres for KPI reads + app state ──
-  # Creating the project auto-provisions a `production` branch and a `primary`
-  # read-write endpoint; both are declared below with `replace_existing: true`
-  # so the bundle can configure (rather than duplicate) them. The endpoint
-  # autoscales between var.lakebase_min_cu and var.lakebase_max_cu -- no fixed
-  # capacity SKU (that was the discontinued provisioned model).
+  # ── Lakebase autoscaling project: managed Postgres for app STATE ──
+  # Declaring a `postgres_projects` resource creates the project AND, implicitly,
+  # its `production` branch plus a `primary` read-write endpoint. The primary
+  # endpoint inherits its compute bounds + suspend timeout from
+  # `default_endpoint_settings`, so we deliberately declare NO `postgres_branches`
+  # and NO `postgres_endpoints` resource (bluebird's proven shape -- see
+  # bluebird resources/lakebase.yml).
+  #
+  # WHY THAT MATTERS (this bit the deploy repeatedly): the implicit production
+  # branch is PROTECTED. Declaring it as a resource with `replace_existing: true`
+  # tells DAB to delete-and-recreate it whenever an identity field changes -- and
+  # the API refuses:
+  #     cannot recreate resources.postgres_branches.cyber_unified_production:
+  #     deleting old id=projects/.../branches/production: cannot delete protected
+  #     branch (400 BAD_REQUEST)
+  # ...which then cascaded into "dependency failed" on the endpoint, the database
+  # and the app. Not declaring the branch/endpoint removes the whole failure mode:
+  # nothing tries to delete a protected branch, and a project-level change (like
+  # the 2->8 CU bump) is an in-place UPDATE.
   postgres_projects:
     cyber_unified_lakebase:
       project_id: ${var.lakebase_project}
@@ -194,44 +209,21 @@ resources:
         # Scale to zero after this much inactivity (1 day by default).
         suspend_timeout_duration: ${var.lakebase_suspend_after}
 
-  postgres_branches:
-    cyber_unified_production:
-      branch_id: ${var.lakebase_branch}
-      # parent references the project's `.name` output (resolves to
-      # projects/<project_id>); NOT `.id`.
-      parent: ${resources.postgres_projects.cyber_unified_lakebase.name}
-      no_expiry: true
-      is_protected: true
-      # Take over the project's implicitly-created production branch.
-      replace_existing: true
-
-  postgres_endpoints:
-    cyber_unified_primary:
-      endpoint_id: ${var.lakebase_endpoint}
-      # parent is the BRANCH (resolves to projects/<id>/branches/<branch_id>).
-      parent: ${resources.postgres_branches.cyber_unified_production.name}
-      endpoint_type: ENDPOINT_TYPE_READ_WRITE
-      autoscaling_limit_min_cu: ${var.lakebase_min_cu}
-      autoscaling_limit_max_cu: ${var.lakebase_max_cu}
-      # Scale to zero after this much inactivity (1 day by default). Mutually
-      # exclusive with no_suspension -- set one or the other, never both.
-      suspend_timeout_duration: ${var.lakebase_suspend_after}
-      # Take over the project's implicitly-created primary endpoint.
-      replace_existing: true
-
   postgres_databases:
     cyber_unified_db:
       database_id: ${var.lakebase_database}
-      # parent is the BRANCH.
-      parent: ${resources.postgres_branches.cyber_unified_production.name}
-      # The Postgres-internal database name the app + synced tables connect to.
+      # Branch path built from VARIABLES, not a resource output -- the branch is
+      # implicit (see above), so there is no resource to reference and no
+      # cross-resource dependency to cascade.
+      parent: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+      # The Postgres-internal database name the app connects to.
       postgres_database: ${var.lakebase_database}
-      # Owner Postgres role -- required by the API in the full branch-scoped
-      # path projects/<p>/branches/<b>/roles/<role_id>. Built from the branch
-      # `.name` + the configured owner role id (see var.lakebase_owner_role).
-      # Take over any implicitly-created db of the same id so the create is
-      # deterministic across redeploys.
-      role: ${resources.postgres_branches.cyber_unified_production.name}/roles/${var.lakebase_owner_role}
+      # Owner Postgres role -- the API wants the full branch-scoped path
+      # projects/<p>/branches/<b>/roles/<role_id> (see var.lakebase_owner_role).
+      role: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/roles/${var.lakebase_owner_role}
+      # Adopt an implicitly-created db of the same id so the create is
+      # deterministic across redeploys. Unlike a branch, a database is NOT
+      # protected, so a replace here is legal.
       replace_existing: true
 
   # NOTE: the Lakebase Postgres DB is intentionally NOT registered as a Unity
@@ -346,10 +338,14 @@ resources:
       resources:
         - name: "lakebase"
           postgres:
-            branch: ${resources.postgres_branches.cyber_unified_production.name}
-            # Full database path (projects/<id>/branches/<id>/databases/<id>); the
-            # API rejects a bare logical name here.
-            database: ${resources.postgres_databases.cyber_unified_db.name}
+            # Paths built from VARIABLES, not resource outputs: the production
+            # branch is implicit (no postgres_branches resource), and referencing
+            # the database resource's output would re-add the cross-resource
+            # dependency whose failure cascaded into "cannot update
+            # resources.apps.cyber_unified_app". The API rejects a bare logical
+            # name here, so both are fully qualified.
+            branch: projects/${var.lakebase_project}/branches/${var.app_connect_branch}
+            database: projects/${var.lakebase_project}/branches/${var.app_connect_branch}/databases/${var.lakebase_database}
             permission: "CAN_CONNECT_AND_CREATE"
 
       # App config (command + env) is BUNDLE-MANAGED so every workspace value
