@@ -34,6 +34,7 @@ from core.config import (
     normalize_period,
     rag_for_measure,
     rollup_status,
+    scale_measure_value,
 )
 from models.common import Kpi, KpiChange, KpiLineage, TrendInfo, TrendPoint
 from models.detail import DetailColumn, DetailQuery, DetailRowsResponse
@@ -169,8 +170,16 @@ class SeedProvider:
     # ── measure evaluation (same portable exprs as the metric view) ──
 
     def _day_expr(self, domain: DomainConfig) -> str | None:
+        """SQL expression for the view's configured time dimension, or None.
+
+        Resolved from metric_view.time_dimension -- never assumed to be "day".
+        When the view declares no time dimension the seed path reads unwindowed,
+        mirroring MetricViewProvider so seed and prod behave identically."""
+        dim = (getattr(domain.metric_view, "time_dimension", "") or "").strip()
+        if not dim:
+            return None
         for d in domain.metric_view.dimensions:
-            if d.name == "day":
+            if d.name == dim:
                 return d.expression
         return None
 
@@ -220,6 +229,12 @@ class SeedProvider:
         if measure is None:
             return Kpi(key=measure_name, label=measure_name, value=str(raw), raw=raw,
                        status="green", caption="", lineage=None)
+
+        # Same unit conversion as MetricViewProvider: config `scale` turns the
+        # view's raw units (e.g. a 0-1 rate) into display units before formatting,
+        # RAG and the delta. Keeps seed == prod.
+        raw = scale_measure_value(measure, raw)
+        prev = scale_measure_value(measure, float(prev)) if prev is not None else None
 
         has_real_prior = (prev is not None and float(prev) > 0.0
                           and float(prev) >= 0.5 * abs(raw))

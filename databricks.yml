@@ -113,10 +113,19 @@ variables:
     default: "primary"
   lakebase_min_cu:
     description: "Lakebase endpoint autoscaling floor in Compute Units (min 0.5)"
-    default: 0.5
+    default: 2
   lakebase_max_cu:
     description: "Lakebase endpoint autoscaling ceiling in Compute Units"
-    default: 2
+    default: 8
+  lakebase_suspend_after:
+    description: >-
+      Inactivity period after which the Lakebase compute endpoint suspends
+      (scale-to-zero). API accepts 60s..604800s (1 minute to 1 week); 86400s = 1
+      day. Mutually exclusive with no_suspension.
+    default: "86400s"
+  app_compute_size:
+    description: "Databricks App compute size: MEDIUM | LARGE (XLARGE is Private Preview)"
+    default: "LARGE"
   lakebase_database:
     description: "Logical Postgres database name inside the Lakebase project (lowercase/digits/underscores)"
     default: "cyber-unified"
@@ -182,6 +191,8 @@ resources:
       default_endpoint_settings:
         autoscaling_limit_min_cu: ${var.lakebase_min_cu}
         autoscaling_limit_max_cu: ${var.lakebase_max_cu}
+        # Scale to zero after this much inactivity (1 day by default).
+        suspend_timeout_duration: ${var.lakebase_suspend_after}
 
   postgres_branches:
     cyber_unified_production:
@@ -202,6 +213,9 @@ resources:
       endpoint_type: ENDPOINT_TYPE_READ_WRITE
       autoscaling_limit_min_cu: ${var.lakebase_min_cu}
       autoscaling_limit_max_cu: ${var.lakebase_max_cu}
+      # Scale to zero after this much inactivity (1 day by default). Mutually
+      # exclusive with no_suspension -- set one or the other, never both.
+      suspend_timeout_duration: ${var.lakebase_suspend_after}
       # Take over the project's implicitly-created primary endpoint.
       replace_existing: true
 
@@ -306,6 +320,8 @@ resources:
       name: "cyber-unified${var.env_suffix}"
       description: "CyberUnified Cybersecurity Posture Dashboard"
       source_code_path: ./app
+      # App compute size (MEDIUM | LARGE; XLARGE is Private Preview).
+      compute_size: ${var.app_compute_size}
 
       # User authorization (on-behalf-of-user). Declaring `user_api_scopes` makes
       # Databricks forward the signed-in user's access token to the app in the
