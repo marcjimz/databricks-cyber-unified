@@ -35,7 +35,7 @@ class FakeSQLClient:
 
 @pytest.fixture
 def config():
-    return load_config(Path(__file__).parent.parent / "cyber360.yaml")
+    return load_config(Path(__file__).parent.parent / "cyber-unified.yaml")
 
 
 def _provider(config, sql_client) -> MetricViewProvider:

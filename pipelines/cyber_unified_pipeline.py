@@ -1,9 +1,9 @@
-"""Cyber360 Lakeflow Declarative Pipeline -- config-driven, no glue scripts.
+"""CyberUnified Lakeflow Declarative Pipeline -- config-driven, no glue scripts.
 
-The pipeline's sole job is the OCSF **gold layer**, driven by ``cyber360.yaml``:
+The pipeline's sole job is the OCSF **gold layer**, driven by ``cyber-unified.yaml``:
 
   1. GOLD           Config-gated demo-data load. When
-                    ``cyber360.load_synthetic_data`` is true, materialize the
+                    ``cyber_unified.load_synthetic_data`` is true, materialize the
                     OCSF gold table for every domain from the shared generator
                     (same PRNG seeds as the app's SeedProvider). When false,
                     the gold tables are the customer's own (bring-your-own-data)
@@ -16,13 +16,13 @@ The pipeline's sole job is the OCSF **gold layer**, driven by ``cyber360.yaml``:
                     ``resources/metricviews/`` (with a ``materialization:`` block
                     for query acceleration), applied by warehouse-executed
                     ``sql_task`` steps chained after this pipeline in the
-                    ``cyber360_data_plane`` job.
+                    ``cyber_unified_data_plane`` job.
 
 KPI reads are served by querying those metric views natively on the SQL
 Warehouse (``providers.metricview.MetricViewProvider``) with ``MEASURE()`` --
 there is no longer a flattened-aggregate stage here or a Lakebase reverse-ETL.
 The measure math lives ONCE, in the metric view. Adding a domain or measure is a
-pure ``cyber360.yaml`` + ``mv_*.sql`` edit.
+pure ``cyber-unified.yaml`` + ``mv_*.sql`` edit.
 """
 
 from __future__ import annotations
@@ -47,9 +47,9 @@ spark = SparkSession.getActiveSession()
 # Boot: pipeline configuration (from databricks.yml `configuration:` block)
 # ---------------------------------------------------------------------------
 
-CATALOG = spark.conf.get("cyber360.catalog", "cyber360")
-SCHEMA = spark.conf.get("cyber360.schema", "posture")
-LOAD_SYNTHETIC = spark.conf.get("cyber360.load_synthetic_data", "true").lower() == "true"
+CATALOG = spark.conf.get("cyber_unified.catalog", "cyber_unified")
+SCHEMA = spark.conf.get("cyber_unified.schema", "posture")
+LOAD_SYNTHETIC = spark.conf.get("cyber_unified.load_synthetic_data", "true").lower() == "true"
 
 CONFIG = load_pipeline_config(catalog=CATALOG, schema=SCHEMA)
 
@@ -101,7 +101,7 @@ _GOLD_SCHEMAS: dict[str, StructType] = {
 # Defined as DLT tables ONLY when loading synthetic demo data. In
 # bring-your-own-data mode the gold tables already exist in UC and the pipeline
 # reads them directly (see `_read_gold`). We build the table definitions in a
-# loop so a new domain in cyber360.yaml needs no new code here.
+# loop so a new domain in cyber-unified.yaml needs no new code here.
 
 def _make_gold_table(gold_name: str):
     schema = _GOLD_SCHEMAS.get(gold_name)
@@ -136,5 +136,5 @@ if LOAD_SYNTHETIC:
 # metric views are created from a SQL warehouse -- each domain's view is a
 # declarative ``.sql`` asset under ``resources/metricviews/`` (carrying its own
 # ``materialization:`` block), applied by the ``metric_view_*`` ``sql_task`` steps
-# chained after this pipeline in the ``cyber360_data_plane`` job. The app reads
+# chained after this pipeline in the ``cyber_unified_data_plane`` job. The app reads
 # those metric views directly, so this pipeline only needs to land the gold.

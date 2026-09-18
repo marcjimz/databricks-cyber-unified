@@ -72,7 +72,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
           <div className="size-8 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-          <p className="text-sm text-muted-foreground">Loading Cyber360...</p>
+          <p className="text-sm text-muted-foreground">Loading CyberUnified...</p>
         </div>
       </div>
     )

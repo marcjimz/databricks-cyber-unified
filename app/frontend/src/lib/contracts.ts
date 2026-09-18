@@ -1,5 +1,5 @@
 /**
- * Cyber360 API contracts.
+ * CyberUnified API contracts.
  *
  * These types are the canonical interface between the SPA and the FastAPI
  * backend (`app/api/*.py`, `app/models/*.py`). They MUST match the actual
@@ -107,7 +107,7 @@ export interface DomainConfig {
   }
   /**
    * Config-driven drill-down table. Columns + filter tabs come straight from
-   * cyber360.yaml's `detail_table:` block; the generic domain page renders them
+   * cyber-unified.yaml's `detail_table:` block; the generic domain page renders them
    * with zero per-domain code. `columns` empty -> no table. The filters' WHERE
    * fragments are server-side only and never sent to the client.
    */

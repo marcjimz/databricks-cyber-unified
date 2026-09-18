@@ -11,7 +11,7 @@ domain's KPIs, trend, and drill-down rows generically:
     against those rows in an in-process **DuckDB** engine.
 
 There is NO per-domain code here (no ``if domain == 'identity'``). Adding a
-domain to ``cyber360.yaml`` + a generator makes the seed provider serve it with
+domain to ``cyber-unified.yaml`` + a generator makes the seed provider serve it with
 zero changes -- mirroring the metric-view provider's config-driven contract.
 
 DuckDB is an OPTIONAL dependency: if it (or the generator) is unavailable, the
@@ -26,7 +26,7 @@ from datetime import date, datetime
 from typing import Any
 
 from core.config import (
-    Cyber360Config,
+    CyberUnifiedConfig,
     DomainConfig,
     _format_change,
     build_change,
@@ -72,7 +72,7 @@ class SeedProvider:
 
     source = "seed"
 
-    def __init__(self, config: Cyber360Config):
+    def __init__(self, config: CyberUnifiedConfig):
         self.config = config
         self._con = None  # lazy DuckDB connection
         self._registered: set[str] = set()
@@ -86,7 +86,7 @@ class SeedProvider:
             import duckdb
         except ImportError:
             logger.warning("duckdb not installed -- seed provider returns zeros. "
-                           "`pip install cyber360-dashboard[dev]` for local KPIs.")
+                           "`pip install cyber-unified[dev]` for local KPIs.")
             self._con = False  # sentinel: tried and unavailable
             return self._con
         self._con = duckdb.connect()

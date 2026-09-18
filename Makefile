@@ -1,4 +1,4 @@
-# Cyber360 — Databricks Asset Bundle deploy helpers.
+# CyberUnified — Databricks Asset Bundle deploy helpers.
 #
 # Mirrors the bluebird Makefile idiom: the env is a POSITIONAL word, e.g.
 #   make deploy sandbox    # validate -> deploy -> data-plane job -> run app, on databricks_sandbox
@@ -7,14 +7,14 @@
 #
 # Individual steps (same positional env):
 #   make validate sandbox    # databricks bundle validate -t databricks_sandbox
-#   make data-plane sandbox  # run cyber360_data_plane (pipeline gold + phishing metric view)
-#   make app sandbox         # deploy + run the app (cyber360_app)
+#   make data-plane sandbox  # run cyber_unified_data_plane (pipeline gold + phishing metric view)
+#   make app sandbox         # deploy + run the app (cyber_unified_app)
 #
 # `make deploy sandbox` = exactly:
 #   databricks bundle validate -t databricks_sandbox
 #   databricks bundle deploy   -t databricks_sandbox
-#   databricks bundle run      -t databricks_sandbox cyber360_data_plane
-#   databricks bundle run      -t databricks_sandbox cyber360_app
+#   databricks bundle run      -t databricks_sandbox cyber_unified_data_plane
+#   databricks bundle run      -t databricks_sandbox cyber_unified_app
 #
 # `make setup <env>` = FIRST-TIME bootstrap for a NEW workspace/target: deploy
 # TWICE (a fresh deploy often needs a second pass — Lakebase provisions the
@@ -33,9 +33,9 @@ APP_DIR  := app
 FE_DIR   := $(APP_DIR)/frontend
 FE_DIST  := $(FE_DIR)/dist
 
-# Full resource keys (a bare prefix like `cyber360_` fails with "resource not found").
-DATA_PLANE_JOB := cyber360_data_plane
-APP_KEY        := cyber360_app
+# Full resource keys (a bare prefix like `cyber_unified_` fails with "resource not found").
+DATA_PLANE_JOB := cyber_unified_data_plane
+APP_KEY        := cyber_unified_app
 
 # Env words treated as a positional target (kept in sync with databricks.yml
 # `targets:`). Short aliases + the canonical names are both accepted.
@@ -70,7 +70,7 @@ PFLAG := $(if $(PROFILE),-p $(PROFILE),)
 # ──────────────────────────────────────────────
 
 help: ## Show this help
-	@echo "Cyber360 — usage:"
+	@echo "CyberUnified — usage:"
 	@echo "  Local dev:"
 	@echo "    make install            install backend (.[dev], incl. duckdb) + frontend deps"
 	@echo "    make build              build the React SPA -> app/frontend/dist"
@@ -99,7 +99,7 @@ build-frontend: ## Build React SPA to dist/
 	cd $(FE_DIR) && $(NPM) run build
 
 dev: build ## Run FastAPI locally with built frontend (seed provider)
-	cd $(APP_DIR) && CYBER360_PROVIDER=seed uvicorn main:app --reload --host 0.0.0.0 --port 8000
+	cd $(APP_DIR) && CYBERUNIFIED_PROVIDER=seed uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 lint: lint-backend lint-frontend ## Lint everything
 

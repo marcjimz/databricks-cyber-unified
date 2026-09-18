@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.config import Cyber360Config, normalize_period
+from core.config import CyberUnifiedConfig, normalize_period
 from core.dependencies import get_config, get_obo_token
 from models.common import ApiResponse, build_meta
 from models.domain import DomainMetricsResponse
@@ -21,7 +21,7 @@ router = APIRouter()
 @router.get("/metrics/scorecard")
 async def metrics_scorecard(
     period: int = Query(30, description="Reporting period in days (30, 60, or 90)"),
-    config: Cyber360Config = Depends(get_config),
+    config: CyberUnifiedConfig = Depends(get_config),
     token: str = Depends(get_obo_token),
 ) -> ApiResponse[ScorecardResponse]:
     provider = get_provider(config, token)
@@ -45,7 +45,7 @@ async def metrics_scorecard(
 async def metrics_domain(
     domain_key: str,
     period: int = Query(30, description="Reporting period in days (30, 60, or 90)"),
-    config: Cyber360Config = Depends(get_config),
+    config: CyberUnifiedConfig = Depends(get_config),
     token: str = Depends(get_obo_token),
 ) -> ApiResponse[DomainMetricsResponse]:
     domain = config.get_domain(domain_key)

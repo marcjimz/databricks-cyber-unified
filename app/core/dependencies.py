@@ -10,18 +10,18 @@ from typing import TYPE_CHECKING
 
 from fastapi import Request
 
-from core.config import Cyber360Config
+from core.config import CyberUnifiedConfig
 from core.sql import SQLClient
 
 if TYPE_CHECKING:
     from psycopg_pool import AsyncConnectionPool
 
 # Module-level singletons set during app lifespan
-_config: Cyber360Config | None = None
+_config: CyberUnifiedConfig | None = None
 _sql_client: SQLClient | None = None
 
 
-def set_global_config(config: Cyber360Config) -> None:
+def set_global_config(config: CyberUnifiedConfig) -> None:
     """Set the global config instance during app startup."""
     global _config, _sql_client
     _config = config
@@ -29,8 +29,8 @@ def set_global_config(config: Cyber360Config) -> None:
         _sql_client = SQLClient(warehouse_id=config.data_source.warehouse_id)
 
 
-def get_config() -> Cyber360Config:
-    """FastAPI dependency: returns the loaded Cyber360 config."""
+def get_config() -> CyberUnifiedConfig:
+    """FastAPI dependency: returns the loaded CyberUnified config."""
     assert _config is not None, "Config not loaded -- app lifespan not started"
     return _config
 

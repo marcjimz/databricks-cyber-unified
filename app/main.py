@@ -1,7 +1,7 @@
-"""Cyber360 Dashboard -- FastAPI Application Entry Point.
+"""CyberUnified Dashboard -- FastAPI Application Entry Point.
 
-Serves the React SPA and API endpoints for the Cyber360 cybersecurity
-posture dashboard. Configuration is loaded from cyber360.yaml at startup.
+Serves the React SPA and API endpoints for the CyberUnified cybersecurity
+posture dashboard. Configuration is loaded from cyber-unified.yaml at startup.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ from core.dependencies import set_global_config
 from core.state import run_state_migrations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-logger = logging.getLogger("cyber360")
+logger = logging.getLogger("cyber_unified")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """App lifecycle: load config, init connections on startup; cleanup on shutdown."""
-    config_path = Path(__file__).parent / "cyber360.yaml"
+    config_path = Path(__file__).parent / "cyber-unified.yaml"
     logger.info("Loading config from %s", config_path)
     config = load_config(config_path)
     set_global_config(config)
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await close_lakebase_pool()
-    logger.info("Cyber360 shutdown complete")
+    logger.info("CyberUnified shutdown complete")
 
 
 app = FastAPI(

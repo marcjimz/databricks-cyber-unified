@@ -310,11 +310,11 @@ function GenieConfigState({ domain }: { domain: GenieDomainConfig }) {
           Set the embed URL
         </p>
         <code className="block break-all font-mono text-[11px] text-foreground">
-          {domain.spaceId ? `Genie Space ${domain.spaceId}` : "genie.embed_url (cyber360.yaml)"}
+          {domain.spaceId ? `Genie Space ${domain.spaceId}` : "genie.embed_url (cyber-unified.yaml)"}
         </code>
         <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
           Configure this domain&apos;s <code className="font-mono">genie.embed_url</code>{" "}
-          in <code className="font-mono">cyber360.yaml</code> (Genie Space &rarr;
+          in <code className="font-mono">cyber-unified.yaml</code> (Genie Space &rarr;
           Share &rarr; Embed URL). The workspace must allow framing this app&apos;s
           origin.
         </p>

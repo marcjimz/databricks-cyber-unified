@@ -1,6 +1,6 @@
-"""Cyber360 configuration loader and Pydantic models.
+"""CyberUnified configuration loader and Pydantic models.
 
-Loads cyber360.yaml, resolves ${ENV_VAR} placeholders from environment,
+Loads cyber-unified.yaml, resolves ${ENV_VAR} placeholders from environment,
 and provides typed access to all configuration sections.
 """
 
@@ -54,7 +54,7 @@ class OrgConfig(BaseModel):
 
 
 class DataSourceConfig(BaseModel):
-    catalog: str = "cyber360"
+    catalog: str = "cyber_unified"
     schema_: str = Field("posture", alias="schema")
     warehouse_id: str = ""
     provider: str = "seed"
@@ -64,9 +64,9 @@ class DataSourceConfig(BaseModel):
 
 class LakebaseStateTablesConfig(BaseModel):
     """Names of the app-owned read-write state tables."""
-    preferences: str = "cyber360_preferences"
-    chats: str = "cyber360_chats"
-    sessions: str = "cyber360_sessions"
+    preferences: str = "cyber_unified_preferences"
+    chats: str = "cyber_unified_chats"
+    sessions: str = "cyber_unified_sessions"
 
 
 class LakebaseConfig(BaseModel):
@@ -75,13 +75,13 @@ class LakebaseConfig(BaseModel):
     # projects/<project>/branches/<branch>/endpoints/<endpoint>. Used to mint the
     # SP credential and resolve the Postgres host.
     endpoint_name: str = ""
-    database_name: str = "cyber360"
+    database_name: str = "cyber-unified"
     # Postgres schema the app SERVICE PRINCIPAL owns for its read-write state
     # tables. The SP has database-level CREATE (from the bound Lakebase resource's
     # CAN_CONNECT_AND_CREATE), so it creates and owns this schema itself -- no
     # external grant required. Kept separate from the read-only synced-aggregate
     # schema (data_source.schema), which the SP only has SELECT on.
-    app_schema: str = "cyber360_app"
+    app_schema: str = "cyber_unified_app"
     # Lakebase now serves ONLY app-owned read-write state (preferences/chats/
     # sessions). KPI reads moved to native UC metric-view queries on the SQL
     # Warehouse (see providers/metricview.py), so the read-only synced-aggregate
@@ -91,7 +91,7 @@ class LakebaseConfig(BaseModel):
 
 class DataLoadingConfig(BaseModel):
     enabled: bool = True
-    target_catalog: str = "cyber360"
+    target_catalog: str = "cyber_unified"
     target_schema: str = "posture"
     load_synthetic: bool = True
 
@@ -204,8 +204,8 @@ class TopLineKpiConfig(BaseModel):
     trend: TrendConfig | None = None
 
 
-class Cyber360Config(BaseModel):
-    """Root configuration model for the Cyber360 dashboard."""
+class CyberUnifiedConfig(BaseModel):
+    """Root configuration model for the CyberUnified dashboard."""
 
     org: OrgConfig
     data_source: DataSourceConfig
@@ -394,14 +394,14 @@ def _resolve_env_vars(obj: Any) -> Any:
     return obj
 
 
-def load_config(path: Path | str | None = None) -> Cyber360Config:
-    """Load and validate cyber360.yaml from the given path."""
+def load_config(path: Path | str | None = None) -> CyberUnifiedConfig:
+    """Load and validate cyber-unified.yaml from the given path."""
     if path is None:
-        path = Path(__file__).parent.parent / "cyber360.yaml"
+        path = Path(__file__).parent.parent / "cyber-unified.yaml"
     path = Path(path)
 
     with open(path) as f:
         raw = yaml.safe_load(f)
 
     resolved = _resolve_env_vars(raw)
-    return Cyber360Config.model_validate(resolved)
+    return CyberUnifiedConfig.model_validate(resolved)

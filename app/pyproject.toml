@@ -1,7 +1,7 @@
 [project]
-name = "cyber360-dashboard"
+name = "cyber-unified"
 version = "0.0.1"
-description = "Cyber360 Unified Cybersecurity Posture Dashboard"
+description = "CyberUnified Unified Cybersecurity Posture Dashboard"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

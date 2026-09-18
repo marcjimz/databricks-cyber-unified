@@ -1,12 +1,12 @@
 """Lightweight, dependency-free config reader for the Lakeflow pipeline.
 
-The FastAPI app parses ``cyber360.yaml`` with Pydantic (``app/core/config.py``).
+The FastAPI app parses ``cyber-unified.yaml`` with Pydantic (``app/core/config.py``).
 The pipeline must not import the app package, so this module re-reads the same
 YAML with only PyYAML and resolves the two placeholders the pipeline cares
-about -- ``${CYBER360_CATALOG}`` / ``${CYBER360_SCHEMA}`` -- from the pipeline's
+about -- ``${CYBERUNIFIED_CATALOG}`` / ``${CYBERUNIFIED_SCHEMA}`` -- from the pipeline's
 Spark configuration rather than the environment.
 
-The pipeline reads the SAME ``cyber360.yaml`` the app ships, so domains,
+The pipeline reads the SAME ``cyber-unified.yaml`` the app ships, so domains,
 metric-view definitions and measure expressions stay defined exactly once.
 """
 
@@ -21,14 +21,14 @@ import yaml
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
-# Candidate locations for cyber360.yaml relative to this file, covering both
+# Candidate locations for cyber-unified.yaml relative to this file, covering both
 # the local repo layout and the DAB-synced workspace files layout.
 _CANDIDATES = [
-    "cyber360.yaml",
-    "../cyber360.yaml",
-    "../app/cyber360.yaml",
-    "../../app/cyber360.yaml",
-    "app/cyber360.yaml",
+    "cyber-unified.yaml",
+    "../cyber-unified.yaml",
+    "../app/cyber-unified.yaml",
+    "../../app/cyber-unified.yaml",
+    "app/cyber-unified.yaml",
 ]
 
 
@@ -41,16 +41,16 @@ def _find_config(explicit: str | None) -> Path:
         p = (here.parent / rel).resolve()
         if p.exists():
             return p
-    # Fall back to walking upward for any cyber360.yaml.
+    # Fall back to walking upward for any cyber-unified.yaml.
     for parent in here.parents:
-        hit = parent / "app" / "cyber360.yaml"
+        hit = parent / "app" / "cyber-unified.yaml"
         if hit.exists():
             return hit
-        hit = parent / "cyber360.yaml"
+        hit = parent / "cyber-unified.yaml"
         if hit.exists():
             return hit
     raise FileNotFoundError(
-        "Could not locate cyber360.yaml. Set CYBER360_CONFIG_PATH or place the "
+        "Could not locate cyber-unified.yaml. Set CYBERUNIFIED_CONFIG_PATH or place the "
         "file alongside the pipeline sources."
     )
 
@@ -72,7 +72,7 @@ def _resolve(obj: Any, overrides: dict[str, str]) -> Any:
 
 
 class PipelineConfig:
-    """Parsed, placeholder-resolved view of cyber360.yaml for the pipeline."""
+    """Parsed, placeholder-resolved view of cyber-unified.yaml for the pipeline."""
 
     def __init__(self, raw: dict, catalog: str, schema: str):
         self.catalog = catalog
@@ -98,9 +98,9 @@ def load_pipeline_config(
     schema: str,
     path: str | None = None,
 ) -> PipelineConfig:
-    cfg_path = _find_config(path or os.environ.get("CYBER360_CONFIG_PATH"))
+    cfg_path = _find_config(path or os.environ.get("CYBERUNIFIED_CONFIG_PATH"))
     with open(cfg_path) as f:
         raw = yaml.safe_load(f)
-    overrides = {"CYBER360_CATALOG": catalog, "CYBER360_SCHEMA": schema}
+    overrides = {"CYBERUNIFIED_CATALOG": catalog, "CYBERUNIFIED_SCHEMA": schema}
     resolved = _resolve(raw, overrides)
     return PipelineConfig(resolved, catalog, schema)

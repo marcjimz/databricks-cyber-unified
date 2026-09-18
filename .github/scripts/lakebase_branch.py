@@ -12,13 +12,13 @@ no extra grant step -- the feature app reads a copy-on-write snapshot of prod da
 Usage:
   # Create (fork from production) -- prints branch/endpoint IDs as JSON:
   python3 lakebase_branch.py create \
-      --project cyber360-lakebase --source-branch production \
+      --project cyber-unified --source-branch production \
       --branch-id feat-add-orders --endpoint-id feat-add-orders \
       --min-cu 0.5 --max-cu 1
 
   # Delete (teardown on PR close):
   python3 lakebase_branch.py delete \
-      --project cyber360-lakebase \
+      --project cyber-unified \
       --branch-id feat-add-orders --endpoint-id feat-add-orders
 
 Auth: a bare WorkspaceClient() -- in CI, OAuth M2M via DATABRICKS_HOST +

@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  LAKEBASE_PROJECT: ${{ vars.CYBER360_LAKEBASE_PROJECT }}
+  LAKEBASE_PROJECT: ${{ vars.CYBERUNIFIED_LAKEBASE_PROJECT }}
 
 jobs:
   fork:

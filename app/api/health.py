@@ -7,4 +7,4 @@ router = APIRouter()
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "service": "cyber360-dashboard"}
+    return {"status": "ok", "service": "cyber-unified"}

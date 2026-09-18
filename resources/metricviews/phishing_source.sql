@@ -1,4 +1,4 @@
--- Cyber360: phishing metric-view SOURCE view.
+-- CyberUnified: phishing metric-view SOURCE view.
 -- A thin pass-through over the per-target source table, bound safely via
 -- IDENTIFIER(:source_table) (accepts an unqualified or fully-qualified name):
 --   * sandbox : :source_table = phishing_detail                    (synthetic gold)

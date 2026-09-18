@@ -1,4 +1,4 @@
-# AGENTS.md — Cyber360 Unified Dashboard (Databricks Asset Bundle)
+# AGENTS.md — CyberUnified Unified Dashboard (Databricks Asset Bundle)
 
 Operating guide for agentic coding tools (Claude Code, Genie Code, and similar).
 This file is named `AGENTS.md` so agentic tools auto-discover it. Read it before
@@ -11,14 +11,14 @@ hardcoding a domain and breaking the config-driven architecture.
 Two defaults govern every change in this repo:
 
 - **Config-driven by default.** This dashboard's entire reason to exist is that a
-  metric view + `cyber360.yaml` config fully define what the UI shows — KPIs,
+  metric view + `cyber-unified.yaml` config fully define what the UI shows — KPIs,
   scorecard tiles, domain health, trends, AND the drill-down table. Adding a
   security domain, a measure, or a detail column MUST be a pure config/SQL edit
-  (`cyber360.yaml` + `resources/metricviews/mv_<domain>.sql`), with **zero** app
+  (`cyber-unified.yaml` + `resources/metricviews/mv_<domain>.sql`), with **zero** app
   code changes. When in doubt, choose the option that pushes behavior into config,
   not into a `if domain == "phishing"` branch. If you find yourself typing a domain
   name, a measure name, or a column list into `.py`/`.tsx`, stop — that belongs in
-  `cyber360.yaml`. A hardcoded domain is a defect, not a feature.
+  `cyber-unified.yaml`. A hardcoded domain is a defect, not a feature.
 - **OBO by default (least privilege).** The data plane is on-behalf-of the
   logged-in user, end to end. KPI + drill-down reads run on the SQL Warehouse with
   the user's forwarded token (`X-Forwarded-Access-Token`), so Unity Catalog
@@ -46,24 +46,24 @@ staging-only demo domains and have been removed (git history preserves them).
 ## Repo layout
 
 ```
-databricks.yml            Bundle root (name: cyber360-dashboard): variables, targets, resources, group permissions
+databricks.yml            Bundle root (name: cyber-unified): variables, targets, resources, group permissions
   targets: databricks_sandbox (default, FEVM, SYNTHETIC) | edp_dev (Azure EDP DEV, REAL CyberArk source) | prod
 resources/
   metricviews/
     mv_phishing.sql        UC Metric View (CREATE VIEW WITH METRICS LANGUAGE YAML) + materialization. :catalog/:schema
                            are where the view LIVES; :source_table is what it READS (swaps per target — pure config).
 pipelines/
-  cyber360_pipeline.py     Lakeflow pipeline: config-gated synthetic gold-table load (_GOLD_SCHEMAS). No metric-view DDL
+  cyber_unified_pipeline.py     Lakeflow pipeline: config-gated synthetic gold-table load (_GOLD_SCHEMAS). No metric-view DDL
                            here (a declarative pipeline cannot run CREATE VIEW WITH METRICS — that's the data-plane job).
   lib/generator.py         Deterministic synthetic gold rows (phishing_detail). The ONE source of synthetic data, shared
                            by the pipeline's demo-load AND the app's seed provider.
-  lib/config.py            Dependency-free cyber360.yaml reader for the pipeline (no app import).
+  lib/config.py            Dependency-free cyber-unified.yaml reader for the pipeline (no app import).
 setup/generate_csvs.py     Standalone CSV emitter (make generate-data) — reference/inspection only.
 app/
-  cyber360.yaml            THE config (SSOT): org, data_source, domains (metric_view measures + dimensions + detail_table),
+  cyber-unified.yaml            THE config (SSOT): org, data_source, domains (metric_view measures + dimensions + detail_table),
                            top_line_kpis, features. Customers edit THIS to point at their data — no code changes.
   main.py                  FastAPI entry: loads config, resolves ${ENV} from app env, inits Lakebase state pool + migrations.
-  core/config.py           Pydantic models for cyber360.yaml + RAG/format/period helpers (shared math).
+  core/config.py           Pydantic models for cyber-unified.yaml + RAG/format/period helpers (shared math).
   core/sql.py              SQL Warehouse client (Statement Execution API), per-request OBO token.
   providers/
     metricview.py          PROD provider: queries the UC metric view with MEASURE() on the warehouse (OBO). GENERIC —
@@ -93,7 +93,7 @@ deploy sandbox`), mapped to the databricks.yml target (`sandbox` ->
 ```bash
 # Local dev (zero workspace deps — seed provider computes KPIs from generator.py):
 make install            # installs .[dev] incl. duckdb (seed engine) + frontend deps
-make dev                # build SPA + uvicorn on :8000 (CYBER360_PROVIDER=seed)
+make dev                # build SPA + uvicorn on :8000 (CYBERUNIFIED_PROVIDER=seed)
 
 # Full deploy sequence in ONE target (validate -> deploy -> data-plane job -> app):
 make deploy sandbox     # FEVM, synthetic phishing data
@@ -102,7 +102,7 @@ make setup sandbox      # FIRST-TIME on a fresh workspace: deploy x2 -> data-pla
 
 # Individual steps (same positional env):
 make validate sandbox   # bundle validate only
-make data-plane sandbox # run cyber360_data_plane (pipeline gold + phishing metric view)
+make data-plane sandbox # run cyber_unified_data_plane (pipeline gold + phishing metric view)
 make app sandbox        # deploy + (re)start the app
 ```
 
@@ -111,14 +111,14 @@ make app sandbox        # deploy + (re)start the app
 - **Two-phase on a fresh workspace.** The first `bundle deploy` may partially fail
   (Lakebase provisions the project asynchronously; synced/derived objects race
   ahead). Re-run `deploy`, then run the data-plane job, then start the app.
-- **Job keys are full resource keys** (`cyber360_data_plane`, `cyber360_app`) — a
+- **Job keys are full resource keys** (`cyber_unified_data_plane`, `cyber_unified_app`) — a
   bare prefix fails with "resource not found".
 - **`workspace.host` is a literal per target** — it configures auth, so DAB forbids
   `${var}` interpolation on it. `databricks_sandbox` and `edp_dev` pin their hosts;
   omit/override via `DATABRICKS_HOST` or `-p <profile>` when deploying elsewhere.
 - **Metric-view DDL runs on the warehouse, not in the pipeline.** `CREATE VIEW WITH
   METRICS` is UC DDL a declarative pipeline rejects; it is a `sql_task`
-  (`metric_view_phishing`) chained after the pipeline in `cyber360_data_plane`.
+  (`metric_view_phishing`) chained after the pipeline in `cyber_unified_data_plane`.
 - **`:source_table` swaps the metric view's source per target** without editing SQL:
   unqualified `phishing_detail` (sandbox → local synthetic gold) vs.
   `conn_cyberarch.dbo.phishing_detail` (edp_dev → real). The view always LIVES in
@@ -132,7 +132,7 @@ make app sandbox        # deploy + (re)start the app
 
 ## Configuration model (the heart of the repo)
 
-`app/cyber360.yaml` is the single source of truth. `${ENV}` placeholders resolve
+`app/cyber-unified.yaml` is the single source of truth. `${ENV}` placeholders resolve
 at startup from the app env (populated by DAB variables). A domain is defined ONCE
 and everything downstream is generic:
 
@@ -142,7 +142,7 @@ domains:
     label: "Phishing & Email Security"
     metric_view:
       name: mv_phishing
-      source_table: "${CYBER360_CATALOG}.${CYBER360_SCHEMA}.phishing_detail"
+      source_table: "${CYBERUNIFIED_CATALOG}.${CYBERUNIFIED_SCHEMA}.phishing_detail"
       dimensions:                       # MUST include a `day` dim (drives 30/60/90 windows + trend)
         - { name: day, expression: "CAST(eventtimestamp AS DATE)" }
       measures:                         # measure MATH lives here AND in mv_*.sql — keep them identical
@@ -196,7 +196,7 @@ block reference `${var.manage_group}` / `${var.user_group}`):
   non-negotiables. Tempted to hardcode a domain/measure/column? Put it in config.
   Tempted to read data as the SP? Use the user's OBO token.
 - **The measure math lives ONCE.** It is the metric view's YAML body, mirrored in
-  `cyber360.yaml` `expression` (used by the seed engine + lineage display). Keep the
+  `cyber-unified.yaml` `expression` (used by the seed engine + lineage display). Keep the
   two identical; if they drift, the seed (local) and prod KPIs disagree.
 - **The front end is config-driven.** Never reintroduce a hardcoded data model, a
   mock store, or `if key === "identity"` branching in a page. Columns, rows, KPIs,

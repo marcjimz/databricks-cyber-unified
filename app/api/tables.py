@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.config import Cyber360Config
+from core.config import CyberUnifiedConfig
 from core.dependencies import get_config, get_obo_token
 from models.common import ApiResponse, build_meta
 from models.detail import DetailQuery, DetailRowsResponse
@@ -28,7 +28,7 @@ async def domain_rows(
     filter: str | None = Query(None, description="One of the domain's configured filter keys"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
-    config: Cyber360Config = Depends(get_config),
+    config: CyberUnifiedConfig = Depends(get_config),
     token: str = Depends(get_obo_token),
 ) -> ApiResponse[DetailRowsResponse]:
     domain = config.get_domain(domain_key)

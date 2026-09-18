@@ -21,10 +21,10 @@ function SocRoute() {
 }
 
 /**
- * Client-side routing for the Cyber360 SPA (replaces the Next.js App Router).
+ * Client-side routing for the CyberUnified SPA (replaces the Next.js App Router).
  * All views hang off a single layout route that supplies the top nav, shell,
  * and Genie provider/drawer. Note the single generic `/domain/:key` route --
- * there are no per-domain pages, so adding a domain in cyber360.yaml requires
+ * there are no per-domain pages, so adding a domain in cyber-unified.yaml requires
  * zero routing or page code (SKILL.md §3).
  */
 export default function App() {
