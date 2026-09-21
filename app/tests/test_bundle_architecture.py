@@ -324,3 +324,42 @@ def test_detail_filters_reference_exposed_columns() -> None:
                     f"filter {flt['key']!r} references column {ident!r}, which the "
                     f"metric view does not expose. Exposed: {sorted(exposed)}"
                 )
+
+
+def test_every_permissionable_resource_grants_all_three_groups(bundle: dict) -> None:
+    """The app, the seed job and the Lakebase project must each grant all audiences.
+
+    Permissions are declared PER RESOURCE (a top-level block double-grants), so a
+    newly added resource silently omits a group unless something checks. Lakebase
+    had NO permissions block at all before the developer group was added.
+    """
+    resources = bundle["resources"]
+    targets = {
+        "apps.cyber_unified_app": resources["apps"]["cyber_unified_app"],
+        "jobs.cyber_unified_seed_job": resources["jobs"]["cyber_unified_seed_job"],
+        "postgres_projects.cyber_unified_lakebase":
+            resources["postgres_projects"]["cyber_unified_lakebase"],
+    }
+    for label, resource in targets.items():
+        perms = resource.get("permissions")
+        assert perms, f"{label} has no permissions block"
+        granted = {e.get("group_name") for e in perms}
+        for var in ("${var.manage_group}", "${var.developer_group}"):
+            assert var in granted, f"{label} does not grant {var} (granted: {granted})"
+
+
+def test_targets_declare_every_group_they_rely_on(bundle: dict) -> None:
+    """A target that overrides one group must not silently inherit a default for
+    another -- the defaults are DPG_CYBER360_* placeholders that will not exist on a
+    customer workspace, and a missing group fails the deploy."""
+    group_vars = {"manage_group", "user_group", "developer_group"}
+    for name, target in (bundle.get("targets") or {}).items():
+        variables = (target.get("variables") or {})
+        declared = group_vars & variables.keys()
+        if not declared:
+            continue  # inherits all defaults (sandbox) -- fine
+        missing = group_vars - declared
+        assert not missing, (
+            f"target {name!r} sets {sorted(declared)} but not {sorted(missing)}; it "
+            "would inherit a DPG_CYBER360_* default that does not exist there."
+        )
