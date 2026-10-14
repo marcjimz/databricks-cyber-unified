@@ -49,7 +49,32 @@ Lakebase (managed Postgres) ──▶ app state only: preferences · chats · se
 ```
 
 One Databricks Asset Bundle (`databricks.yml`) deploys the app, the Lakebase
-project, and one **gated, sandbox-only** seed job — nothing else.
+project, the AI/BI dashboard, and one **gated, sandbox-only** seed job — nothing else.
+
+### AI/BI dashboard (lower-maintenance alternative, side-by-side)
+
+`dashboards/cyber_unified.lvdash.json` is the same CISO Scorecard and Phishing
+drill-down rebuilt as a managed **AI/BI dashboard**: no FastAPI, React, Lakebase,
+or app compute to maintain. It reads the **same** metric view. Every dataset
+uses a bare `FROM phishing_detail_metric_view`, and the bundle resolves it inside
+`${var.catalog}.${var.schema}` per target. Everything except the two filters
+(period and outcome, which are native dropdowns) is a **Custom Visualization**
+(Vega-Lite) styled to match the app. It
+publishes with `embed_credentials: false`, so each viewer queries with their own
+UC permissions (OBO).
+
+- **Deploy:** `make deploy <env>` deploys and publishes it along with everything else.
+- **Edit:** change it in the AI/BI editor, then copy the edited JSON back into
+  `dashboards/cyber_unified.lvdash.json` (`databricks lakeview get <id>` returns it as
+  `serialized_dashboard`). Commit it, or the next deploy overwrites your edits.
+- **How it looks like the app:** widget chrome is transparent, and each custom viz
+  draws the app's cards, nav bar, breadcrumb, section labels, 25-row events table and
+  definitions table as live text and vector marks (no images).
+- **What it can't reproduce:** working nav links (use the dashboard's page tabs), the
+  segmented 30/60/90 pills and All/Clicked/Reported/No-action tabs (native dropdowns),
+  the Chats badge/theme toggle/avatar (the dashboard follows the viewer's workspace
+  theme), and Lakebase-backed chats. The native "Ask Genie" bar replaces the chat
+  drawer, and a Vega tooltip on each KPI's lineage icon replaces the lineage popover.
 
 ---
 
