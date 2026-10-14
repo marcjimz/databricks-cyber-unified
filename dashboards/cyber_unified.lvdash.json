@@ -22,15 +22,15 @@
         "),\n",
         "m AS (\n",
         "  SELECT stack(4,\n",
-        "    1, 'click_rate', 'Phishing click rate', 'Target: <5%', 'percent', 'lower', 5.0D, 10.0D, true, true,\n",
+        "    1, 'click_rate', 'Phishing click rate', 'Target: <5%', 'Phishing click rate', 'percent', 'lower', 5.0D, 10.0D, true, true,\n",
         "       CAST(c.click_rate * 100 AS DOUBLE), CAST(p.click_rate * 100 AS DOUBLE),\n",
-        "    2, 'report_rate', 'Phishing report rate', 'Target: >15%', 'percent', 'higher', 15.0D, 8.0D, true, true,\n",
+        "    2, 'report_rate', 'Phishing report rate', 'Target: >15%', 'Phishing report rate', 'percent', 'higher', 15.0D, 8.0D, true, true,\n",
         "       CAST(c.report_rate * 100 AS DOUBLE), CAST(p.report_rate * 100 AS DOUBLE),\n",
-        "    3, 'avg_click_rate', 'Average click rate', 'Simulation average', 'percent', 'lower', 5.0D, 10.0D, false, false,\n",
+        "    3, 'avg_click_rate', 'Average click rate', 'Simulation average', CAST(NULL AS STRING), 'percent', 'lower', 5.0D, 10.0D, false, false,\n",
         "       CAST(c.avg_click_rate * 100 AS DOUBLE), CAST(p.avg_click_rate * 100 AS DOUBLE),\n",
-        "    4, 'events', 'Campaign events', 'Simulated sends', 'count', 'higher', CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE), true, true,\n",
+        "    4, 'events', 'Campaign events', 'Simulated sends', 'Campaign events', 'count', 'higher', CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE), true, true,\n",
         "       CAST(c.events AS DOUBLE), CAST(p.events AS DOUBLE)\n",
-        "  ) AS (ord, measure_key, label, caption, fmt, goal, green, amber, on_scorecard, is_highlight, val, prev_val)\n",
+        "  ) AS (ord, measure_key, label, caption, scorecard_caption, fmt, goal, green, amber, on_scorecard, is_highlight, val, prev_val)\n",
         "  FROM cur c CROSS JOIN prev p\n",
         "),\n",
         "r AS (\n",
@@ -45,7 +45,7 @@
         "    END AS delta\n",
         "  FROM m\n",
         ")\n",
-        "SELECT ord, measure_key, label, caption, goal, on_scorecard, val, rag,\n",
+        "SELECT ord, measure_key, label, caption, scorecard_caption, goal, on_scorecard, val, rag,\n",
         "  CASE WHEN fmt = 'percent' THEN concat(format_number(val, 2), '%') ELSE format_number(val, 0) END AS value_text,\n",
         "  CASE\n",
         "    WHEN delta IS NULL OR delta = 0 THEN 'Change: No change'\n",
@@ -181,6 +181,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -241,6 +245,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -398,6 +405,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -460,6 +471,9 @@
                     "fieldName": "caption"
                   },
                   {
+                    "fieldName": "scorecard_caption"
+                  },
+                  {
                     "fieldName": "rag"
                   },
                   {
@@ -487,7 +501,7 @@
               },
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
+                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"scorecard_caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
               },
               "frame": {
                 "showTitle": false
@@ -525,6 +539,10 @@
                     {
                       "name": "caption",
                       "expression": "`caption`"
+                    },
+                    {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
                     },
                     {
                       "name": "rag",
@@ -589,6 +607,9 @@
                     "fieldName": "caption"
                   },
                   {
+                    "fieldName": "scorecard_caption"
+                  },
+                  {
                     "fieldName": "rag"
                   },
                   {
@@ -616,7 +637,7 @@
               },
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
+                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"scorecard_caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
               },
               "frame": {
                 "showTitle": false
@@ -654,6 +675,10 @@
                     {
                       "name": "caption",
                       "expression": "`caption`"
+                    },
+                    {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
                     },
                     {
                       "name": "rag",
@@ -718,6 +743,9 @@
                     "fieldName": "caption"
                   },
                   {
+                    "fieldName": "scorecard_caption"
+                  },
+                  {
                     "fieldName": "rag"
                   },
                   {
@@ -745,7 +773,7 @@
               },
               "jsonSpec": {
                 "type": "vega-lite",
-                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
+                "spec": "{\"$schema\": \"https://vega.github.io/schema/vega-lite/v6.json\", \"data\": {\"name\": \"databricks_query\"}, \"width\": \"container\", \"height\": \"container\", \"config\": {\"autosize\": {\"type\": \"fit\", \"contains\": \"padding\"}, \"view\": {\"stroke\": null}}, \"transform\": [{\"calculate\": \"datum.rag === 'green' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.rag === 'amber' ? (mode === 'dark' ? '#ffba66' : '#c9700d') : (mode === 'dark' ? '#ff4d7a' : '#e6003e')\", \"as\": \"rag_color\"}, {\"calculate\": \"datum.change_tone === 'positive' ? (mode === 'dark' ? '#2bb6a7' : '#00857c') : datum.change_tone === 'negative' ? (mode === 'dark' ? '#ff4d7a' : '#e6003e') : (mode === 'dark' ? '#b7afe0' : '#5b5685')\", \"as\": \"tone_color\"}, {\"calculate\": \"datum.rag === 'green' ? '\\u2713' : '!'\", \"as\": \"glyph\"}, {\"calculate\": \"datum.change_arrow + '  ' + datum.change_text\", \"as\": \"change_line\"}], \"layer\": [{\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 6, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}}, \"encoding\": {\"text\": {\"field\": \"label\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"point\", \"shape\": \"circle\", \"filled\": false, \"size\": 230, \"strokeWidth\": 1.6, \"x\": 11, \"y\": 44}, \"encoding\": {\"stroke\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 11, \"y\": 45, \"align\": \"center\", \"baseline\": \"middle\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 11, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"glyph\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 30, \"y\": 45, \"align\": \"left\", \"baseline\": \"middle\", \"font\": \"ui-serif, Georgia, 'Times New Roman', serif\", \"fontSize\": 30, \"fontWeight\": 700}, \"encoding\": {\"text\": {\"field\": \"value_text\"}, \"color\": {\"field\": \"rag_color\", \"type\": \"nominal\", \"scale\": null}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 72, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 400, \"color\": {\"expr\": \"mode === 'dark' ? '#f4f2fb' : '#110057'\"}, \"opacity\": 0.9}, \"encoding\": {\"text\": {\"field\": \"scorecard_caption\", \"type\": \"nominal\"}}}, {\"mark\": {\"type\": \"text\", \"x\": 2, \"y\": 96, \"align\": \"left\", \"baseline\": \"top\", \"font\": \"ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif\", \"fontSize\": 14, \"fontWeight\": 500}, \"encoding\": {\"text\": {\"field\": \"change_line\"}, \"color\": {\"field\": \"tone_color\", \"type\": \"nominal\", \"scale\": null}}}]}"
               },
               "frame": {
                 "showTitle": false
@@ -799,6 +827,10 @@
                     {
                       "name": "caption",
                       "expression": "`caption`"
+                    },
+                    {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
                     },
                     {
                       "name": "rag",
@@ -861,6 +893,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -954,6 +989,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -1014,6 +1053,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -1205,6 +1247,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -1265,6 +1311,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -1334,6 +1383,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -1394,6 +1447,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -1463,6 +1519,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -1523,6 +1583,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
@@ -1592,6 +1655,10 @@
                       "expression": "`caption`"
                     },
                     {
+                      "name": "scorecard_caption",
+                      "expression": "`scorecard_caption`"
+                    },
+                    {
                       "name": "rag",
                       "expression": "`rag`"
                     },
@@ -1652,6 +1719,9 @@
                   },
                   {
                     "fieldName": "caption"
+                  },
+                  {
+                    "fieldName": "scorecard_caption"
                   },
                   {
                     "fieldName": "rag"
