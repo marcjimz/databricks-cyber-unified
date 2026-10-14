@@ -19,6 +19,7 @@ workspace dependencies.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -31,6 +32,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _pool: AsyncConnectionPool | None = None
+
+# How long a single pool checkout waits before raising. Bounded so a still-waking
+# (scale-to-zero) endpoint surfaces an error instead of hanging a request forever.
+_POOL_CHECKOUT_TIMEOUT = 30.0
+
+# Background warm-up: keep retrying the first connection until the endpoint
+# finishes its cold start. CONNECTING is what wakes Lakebase, so this is the wake
+# trigger -- it just runs OFF the startup path so the health check is never blocked.
+_WARMUP_ATTEMPTS = 12
+_WARMUP_BACKOFF = 10.0
+_warmup_task: asyncio.Task | None = None
 
 # Endpoint host is stable for the life of the endpoint, so resolve it once via
 # the SDK and cache it -- the per-request DSN build must not pay a control-plane
@@ -118,7 +130,20 @@ def _sp_credential(config: CyberUnifiedConfig) -> str:
 # ---------------------------------------------------------------------------
 
 async def init_lakebase_pool(config: CyberUnifiedConfig) -> None:
-    """Open the app-level connection pool if Lakebase is enabled."""
+    """Open the app-level connection pool if Lakebase is enabled.
+
+    MUST NOT BLOCK APP STARTUP. Lakebase scales to zero (see
+    var.lakebase_suspend_after), and CONNECTING is what wakes it -- but that cold
+    start takes tens of seconds, longer than the Databricks Apps startup health
+    check. Previously this opened the pool with ``min_size=1`` and no timeout, so a
+    suspended endpoint made startup hang: ``Application startup complete`` never
+    printed and the platform killed the app mid-wake, every time. Idle app + idle
+    Lakebase meant every visit hit a double cold start and crashed.
+
+    So the pool is created with ``min_size=0`` and a bounded connect timeout: no
+    connection is demanded up front, and the first real checkout (or the
+    background warm-up in ``start_lakebase_warmup``) triggers the wake.
+    """
     global _pool
 
     if not config.lakebase.enabled or not config.lakebase.endpoint_name:
@@ -133,25 +158,97 @@ async def init_lakebase_pool(config: CyberUnifiedConfig) -> None:
         dsn = _lakebase_dsn(
             config, _sp_credential(config), search_path=config.lakebase.app_schema
         )
-        _pool = AsyncConnectionPool(conninfo=dsn, min_size=1, max_size=5, open=False)
+        # min_size=0: never block on a connection at creation time. timeout bounds
+        # how long a single checkout waits, so a still-waking endpoint raises
+        # (caught by callers) instead of hanging forever.
+        _pool = AsyncConnectionPool(
+            conninfo=dsn,
+            min_size=0,
+            max_size=5,
+            timeout=_POOL_CHECKOUT_TIMEOUT,
+            open=False,
+        )
         await _pool.open()
-
-        # Ensure the SP-owned app schema exists BEFORE migrations run. On a fresh
-        # Lakebase database only `public` exists (and the SP is not its owner), so
-        # the search_path=<app_schema>,public would otherwise fall through to
-        # `public` and the migration DDL fails with "permission denied for schema
-        # public". The SP holds database-level CREATE (CAN_CONNECT_AND_CREATE), so
-        # it can create + own this schema itself -- no external grant needed.
-        app_schema = config.lakebase.app_schema
-        async with _pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{app_schema}"')
-            await conn.commit()
-
-        logger.info("Lakebase app-level connection pool initialized (schema=%s)", app_schema)
+        logger.info("Lakebase pool created (lazy, schema=%s)", config.lakebase.app_schema)
     except Exception:
-        logger.exception("Failed to initialize Lakebase pool -- continuing without persistence")
+        logger.exception("Failed to create Lakebase pool -- continuing without persistence")
         _pool = None
+
+
+async def ensure_app_schema(config: CyberUnifiedConfig) -> None:
+    """Create the SP-owned app schema. Requires a live connection (wakes Lakebase).
+
+    On a fresh Lakebase database only ``public`` exists (and the SP is not its
+    owner), so ``search_path=<app_schema>,public`` would otherwise fall through to
+    ``public`` and the migration DDL fails with "permission denied for schema
+    public". The SP holds database-level CREATE (CAN_CONNECT_AND_CREATE), so it can
+    create + own this schema itself -- no external grant needed.
+    """
+    if _pool is None:
+        return
+    app_schema = config.lakebase.app_schema
+    async with _pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{app_schema}"')
+        await conn.commit()
+    logger.info("Lakebase app schema ready (schema=%s)", app_schema)
+
+
+async def _warmup(config: CyberUnifiedConfig) -> None:
+    """Wake Lakebase and bootstrap state, retrying through the cold start.
+
+    Runs as a BACKGROUND task so app startup never waits on it. Opening a
+    connection is what wakes a scale-to-zero endpoint, so this is the wake trigger
+    -- it just keeps retrying until the endpoint finishes coming up, then creates
+    the app schema and applies the state migrations.
+
+    Every failure path is swallowed: Lakebase holds only app state
+    (preferences/chats/sessions), and KPI reads go to the SQL warehouse, so the app
+    must stay fully usable even if this never succeeds.
+    """
+    # Imported here to avoid a circular import (migrations imports get_pool).
+    from core.migrations import run_migrations
+
+    for attempt in range(1, _WARMUP_ATTEMPTS + 1):
+        try:
+            await ensure_app_schema(config)
+            await run_migrations(config)
+            logger.info("Lakebase ready (state persistence enabled)")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info(
+                "Lakebase not ready yet (attempt %d/%d): %s -- retrying in %.0fs",
+                attempt, _WARMUP_ATTEMPTS, exc, _WARMUP_BACKOFF,
+            )
+            await asyncio.sleep(_WARMUP_BACKOFF)
+
+    logger.warning(
+        "Lakebase did not become ready after %d attempts -- running without "
+        "persistence (KPIs are unaffected; they read the SQL warehouse)",
+        _WARMUP_ATTEMPTS,
+    )
+
+
+def start_lakebase_warmup(config: CyberUnifiedConfig) -> None:
+    """Kick off the background Lakebase warm-up. Returns immediately."""
+    global _warmup_task
+    if _pool is None:
+        return
+    _warmup_task = asyncio.create_task(_warmup(config))
+
+
+async def stop_lakebase_warmup() -> None:
+    """Cancel the warm-up task if it is still retrying (shutdown path)."""
+    global _warmup_task
+    if _warmup_task and not _warmup_task.done():
+        _warmup_task.cancel()
+        try:
+            await _warmup_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    _warmup_task = None
 
 
 async def close_lakebase_pool() -> None:
