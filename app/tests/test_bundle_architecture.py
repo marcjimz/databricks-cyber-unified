@@ -339,6 +339,8 @@ def test_every_permissionable_resource_grants_all_three_groups(bundle: dict) -> 
         "jobs.cyber_unified_seed_job": resources["jobs"]["cyber_unified_seed_job"],
         "postgres_projects.cyber_unified_lakebase":
             resources["postgres_projects"]["cyber_unified_lakebase"],
+        "dashboards.cyber_unified_dashboard":
+            resources["dashboards"]["cyber_unified_dashboard"],
     }
     for label, resource in targets.items():
         perms = resource.get("permissions")
@@ -362,4 +364,62 @@ def test_targets_declare_every_group_they_rely_on(bundle: dict) -> None:
         assert not missing, (
             f"target {name!r} sets {sorted(declared)} but not {sorted(missing)}; it "
             "would inherit a DPG_CYBER360_* default that does not exist there."
+        )
+
+
+# ── AI/BI dashboard ──
+
+DASHBOARD = REPO / "dashboards" / "cyber_unified.lvdash.json"
+
+
+def _dashboard_sql() -> dict[str, str]:
+    import json
+
+    spec = json.loads(DASHBOARD.read_text())
+    return {ds["name"]: "".join(ds.get("queryLines", [])) for ds in spec["datasets"]}
+
+
+def test_dashboard_runs_as_the_viewer(bundle: dict) -> None:
+    """embed_credentials must stay false -- it is the dashboard form of OBO.
+
+    Embedding the publisher's credentials would make every viewer read with the
+    publisher's UC privileges, bypassing per-user governance.
+    """
+    dash = bundle["resources"]["dashboards"]["cyber_unified_dashboard"]
+    assert dash.get("embed_credentials") is False, (
+        "dashboards.cyber_unified_dashboard must set embed_credentials: false so "
+        "queries run as the viewer (OBO), never as the publisher."
+    )
+
+
+def test_dashboard_resolves_catalog_schema_from_the_bundle(bundle: dict) -> None:
+    """Datasets use bare names; catalog/schema come from the target, never the JSON.
+
+    dataset_catalog/dataset_schema only FILL IN missing parts -- a hardcoded
+    `catalog.schema.` prefix silently pins every target to one environment.
+    """
+    dash = bundle["resources"]["dashboards"]["cyber_unified_dashboard"]
+    assert dash.get("dataset_catalog") == "${var.catalog}"
+    assert dash.get("dataset_schema") == "${var.schema}"
+    for name, sql in _dashboard_sql().items():
+        qualified = re.findall(r"\bFROM\s+(`?[\w-]+`?\.`?[\w-]+`?(?:\.`?[\w-]+`?)?)", sql, re.I)
+        assert not qualified, f"dataset {name!r} hardcodes a qualified name: {qualified}"
+
+
+def test_dashboard_reads_only_the_named_metric_view() -> None:
+    """Every dataset reads the configured metric view (or inline VALUES), nothing else.
+
+    Same contract as the app: the published view's NAME is the whole data contract,
+    so the dashboard needs no privilege on whatever the view is built over.
+    """
+    cfg = yaml.safe_load((REPO / "app" / "cyber-unified.yaml").read_text())
+    allowed = {d["metric_view"]["name"] for d in cfg.get("domains", [])}
+    for name, sql in _dashboard_sql().items():
+        sources = set(re.findall(r"\b(?:FROM|JOIN)\s+`?([A-Za-z_][\w]*)`?", sql, re.I))
+        # CTE names (WITH x AS / , x AS) and inline VALUES are local, not tables.
+        ctes = set(re.findall(r"(?:\bWITH|,)\s*([A-Za-z_]\w*)\s+AS\s*\(", sql, re.I))
+        unexpected = sources - allowed - ctes - {"VALUES"}
+        assert not unexpected, (
+            f"dataset {name!r} reads {sorted(unexpected)}; dashboards may only read "
+            f"the configured metric view(s) {sorted(allowed)}."
         )

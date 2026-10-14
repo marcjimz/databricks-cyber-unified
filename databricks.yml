@@ -14,6 +14,8 @@
 #   postgres_databases    -> the logical Postgres database the app connects to
 #   jobs                  -> the GATED synthetic-gold seed (sandbox only)
 #   apps                  -> the FastAPI + React dashboard
+#   dashboards            -> the same pages as an AI/BI dashboard (Custom Viz),
+#                            side-by-side with the app; reads the same metric view
 #
 # The semantic layer is a Unity Catalog METRIC VIEW that ALREADY EXISTS on the
 # target. The app is given its name (domains[].metric_view.name in
@@ -427,6 +429,35 @@ resources:
         - level: CAN_MANAGE
           group_name: ${var.developer_group}
         - level: CAN_USE
+          group_name: ${var.user_group}
+
+  # ── The AI/BI dashboard (runs side-by-side with the app) ──
+  # The same scorecard + phishing drill-down, as a managed AI/BI dashboard styled
+  # with Custom Visualizations (Vega-Lite). It reads the SAME already-published
+  # metric view: every dataset says a bare `FROM phishing_detail_metric_view`, and
+  # dataset_catalog/dataset_schema resolve it inside ${var.catalog}.${var.schema}
+  # per target -- so it, too, creates nothing in the data layer.
+  #
+  # embed_credentials: false is the dashboard form of OBO -- each viewer's queries
+  # run with THEIR identity, so UC permissions are enforced per user. Never embed
+  # the publisher's credentials.
+  #
+  # dashboards/cyber_unified.lvdash.json is the dashboard's source of truth; edit it
+  # in the AI/BI editor, then copy the edited JSON back (see AGENTS.md).
+  dashboards:
+    cyber_unified_dashboard:
+      display_name: "CyberUnified${var.env_suffix}"
+      file_path: ./dashboards/cyber_unified.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
+      embed_credentials: false
+      permissions:
+        - level: CAN_MANAGE
+          group_name: ${var.manage_group}
+        - level: CAN_MANAGE
+          group_name: ${var.developer_group}
+        - level: CAN_RUN
           group_name: ${var.user_group}
 
 # NOTE on workspace host: `workspace.host` is an AUTHENTICATION field, which the

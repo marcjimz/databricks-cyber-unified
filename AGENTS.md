@@ -32,9 +32,11 @@ Two defaults govern every change in this repo:
 
 A config-driven cybersecurity posture dashboard. It **READS an already-published
 UC Metric View** and **CREATES NOTHING in the data layer**. It ships as a
-Databricks Asset Bundle (DAB) that provisions exactly two things: a Databricks App
-(FastAPI + built React SPA), and an autoscaling **Lakebase** Postgres project that
-serves ONLY the app's read-write state. KPIs are read by querying the metric view
+Databricks Asset Bundle (DAB) that provisions a Databricks App (FastAPI + built
+React SPA), an autoscaling **Lakebase** Postgres project that serves ONLY the app's
+read-write state, and an **AI/BI dashboard** (`dashboards/cyber_unified.lvdash.json`)
+that rebuilds the same two pages over the same metric view, for customers who don't
+want to maintain an app. The app and the dashboard run side-by-side. KPIs are read by querying the metric view
 natively with `MEASURE()` on the SQL Warehouse (per-user OBO) — there is no
 reverse-ETL and no flattened aggregate stage.
 
@@ -54,7 +56,13 @@ staging-only demo domains and have been removed (git history preserves them).
 ```
 databricks.yml            Bundle root (name: cyber-unified): variables, targets, resources, group permissions
   targets: databricks_sandbox (default, FEVM, SYNTHETIC) | edp_dev (Azure EDP DEV, REAL CyberArk source) | prod
-  resources: the APP + the Lakebase project ONLY — plus the gated seed job. NO pipeline, NO data-plane job.
+  resources: the APP + the Lakebase project + the AI/BI DASHBOARD — plus the gated seed job. NO pipeline, NO data-plane job.
+dashboards/
+  cyber_unified.lvdash.json  The AI/BI dashboard (bundle resource `cyber_unified_dashboard`). ITS OWN source of truth:
+                           edited in the AI/BI editor, then the edited JSON is copied back here and committed. Datasets
+                           read ONLY the named metric view via a bare `FROM <name>` (catalog/schema come from the
+                           bundle's dataset_catalog/dataset_schema); KPI cards, header, health card and trend are
+                           Custom Visualizations (Vega-Lite `custom-vega-viz`).
 setup/sandbox/            SANDBOX-ONLY UTILITY (emulates what a real workspace already provides). NOT a bundle
                            resource, NOT a deploy step, and never run against a real target.
   phishing_source.sql      Pass-through view over the seeded synthetic gold.
@@ -92,10 +100,11 @@ app/
   frontend/                Vite + React SPA (config-driven; /domain/:key is one generic route). dist/ is COMMITTED.
   migrations/              Lakebase app-state migrations (preferences/chats/sessions) — app-owned RW state only.
   tests/
-    test_bundle_architecture.py  DURABLE GUARD SUITE (8 tests) — fails if a future change reintroduces a pipeline
+    test_bundle_architecture.py  DURABLE GUARD SUITE — fails if a future change reintroduces a pipeline
                            resource, a data-plane job / any sql_task, a metric_view built rather than named, view
                            DDL outside setup/sandbox/, ungated or default-on seeding, seeding inside deploy, a
-                           dangling ${resources.*}/${var.*} ref, or a real-data target that enables seeding.
+                           dangling ${resources.*}/${var.*} ref, a real-data target that enables seeding, or a dashboard
+                           that embeds credentials, hardcodes catalog.schema, or reads anything but the metric view.
 README.md / SKILL.md       Deployment guide + design principles. MEMORY.md — dev log (gitignored).
 ```
 
@@ -219,8 +228,8 @@ Rules baked into the code (nothing hardcoded to a domain):
 
 Group-driven, and identical across targets (top-level `permissions:` + the app
 block reference `${var.manage_group}` / `${var.user_group}`):
-- `manage_group` → CAN_MANAGE on the app + seed job; `user_group` → app CAN_USE,
-  seed job CAN_VIEW. The groups must PRE-EXIST (DABs cannot create groups).
+- `manage_group` → CAN_MANAGE on the app + seed job + dashboard; `user_group` → app
+  CAN_USE, dashboard CAN_RUN, seed job CAN_VIEW. The groups must PRE-EXIST (DABs cannot create groups).
 - **UC data-layer grants are a one-time metastore-admin step, NOT in the bundle** —
   UC grant principals must be ACCOUNT groups (these are workspace groups). Grant the
   user group `USE CATALOG` + `USE SCHEMA` + `SELECT` on the catalog/schema so members
@@ -243,6 +252,15 @@ block reference `${var.manage_group}` / `${var.user_group}`):
   trends, and breakdowns all come from `/api/config` + `/api/metrics/:key` +
   `/api/:key/rows`. `dist/` is committed (the Apps runtime has no build step) —
   rebuild with `make build` and commit when the UI changes.
+- **The AI/BI dashboard follows the same two principles.** It must keep
+  `embed_credentials: false` (the dashboard form of OBO: viewers query as
+  themselves), and its datasets may read only the configured metric view by its bare
+  name, never a qualified `catalog.schema.` name and never the source tables. The
+  guard suite enforces all three. Custom Viz is Vega-Lite only (no HTML/CSS/JS).
+  Known traps: a `rule` mark blanks the whole widget (draw a 1px `rect` instead), and
+  image marks need an inline base64 PNG/JPEG/WebP of 37 KB or less. Because the
+  `.lvdash.json` is not generated from `cyber-unified.yaml`, a new measure or domain
+  needs a dashboard edit too.
 - **Branching + PRs.** Substantial changes land on a feature branch → PR → merge to
   `main`, one concern per PR. Keep environment config isolated in `databricks.yml`
   targets — no per-developer hardcoding.
