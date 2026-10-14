@@ -57,9 +57,9 @@ project, the AI/BI dashboard, and one **gated, sandbox-only** seed job — nothi
 drill-down rebuilt as a managed **AI/BI dashboard**: no FastAPI, React, Lakebase,
 or app compute to maintain. It reads the **same** metric view. Every dataset
 uses a bare `FROM phishing_detail_metric_view`, and the bundle resolves it inside
-`${var.catalog}.${var.schema}` per target. The KPI cards, domain-health card,
-header and trend are **Custom Visualizations** (Vega-Lite) styled to match the
-app. The period filter, outcome filter and events table are native widgets. It
+`${var.catalog}.${var.schema}` per target. Everything except the two filters
+(period and outcome, which are native dropdowns) is a **Custom Visualization**
+(Vega-Lite) styled to match the app. It
 publishes with `embed_credentials: false`, so each viewer queries with their own
 UC permissions (OBO).
 
