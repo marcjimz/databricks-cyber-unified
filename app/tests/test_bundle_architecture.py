@@ -423,3 +423,16 @@ def test_dashboard_reads_only_the_named_metric_view() -> None:
             f"dataset {name!r} reads {sorted(unexpected)}; dashboards may only read "
             f"the configured metric view(s) {sorted(allowed)}."
         )
+
+
+def test_dashboard_renders_text_not_images() -> None:
+    """Everything on the dashboard is live text / vector marks bound to the query.
+
+    Pasting a picture (a logo PNG, a screenshot of the app) into an image mark or
+    an image widget would look right but show no data and drift from the source.
+    """
+    raw = DASHBOARD.read_text()
+    assert "data:image" not in raw, "dashboard embeds a base64 image; render it as text/marks"
+    assert '\\"type\\": \\"image\\"' not in raw and '"type": "image"' not in raw, (
+        "dashboard uses an image mark; render it as text/marks"
+    )

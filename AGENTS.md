@@ -257,8 +257,14 @@ block reference `${var.manage_group}` / `${var.user_group}`):
   themselves), and its datasets may read only the configured metric view by its bare
   name, never a qualified `catalog.schema.` name and never the source tables. The
   guard suite enforces all three. Custom Viz is Vega-Lite only (no HTML/CSS/JS).
-  Known traps: a `rule` mark blanks the whole widget (draw a 1px `rect` instead), and
-  image marks need an inline base64 PNG/JPEG/WebP of 37 KB or less. Because the
+  Look-and-feel technique: the theme sets widget background and border = canvas
+  (transparent chrome), and each custom viz draws the app's card, labels and type
+  (Tailwind metrics from app/frontend/src). No images, ever: everything is live text
+  or vector marks (a guard test fails on any image). Known traps: a `rule` mark blanks
+  the whole widget (draw a 1px `rect`); a top-level `encoding` is inherited by every
+  layer, which pins text layers to data coordinates (keep encodings on the data
+  layers); Spark SQL `''` inside a literal concatenates, not escapes (use `\'`); each
+  custom viz reserves about 36px above its canvas. Because the
   `.lvdash.json` is not generated from `cyber-unified.yaml`, a new measure or domain
   needs a dashboard edit too.
 - **Branching + PRs.** Substantial changes land on a feature branch → PR → merge to

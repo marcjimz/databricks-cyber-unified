@@ -67,10 +67,14 @@ UC permissions (OBO).
 - **Edit:** change it in the AI/BI editor, then copy the edited JSON back into
   `dashboards/cyber_unified.lvdash.json` (`databricks lakeview get <id>` returns it as
   `serialized_dashboard`). Commit it, or the next deploy overwrites your edits.
-- **What it can't reproduce:** the app's top nav, segmented 30/60/90 pills and outcome
-  tabs (native dropdowns instead), hover/lineage popovers, the theme toggle (it
-  follows the viewer's workspace theme) and Lakebase-backed chats. The native
-  "Ask Genie" bar replaces the chat drawer.
+- **How it looks like the app:** widget chrome is transparent, and each custom viz
+  draws the app's cards, nav bar, breadcrumb, section labels, 25-row events table and
+  definitions table as live text and vector marks (no images).
+- **What it can't reproduce:** working nav links (use the dashboard's page tabs), the
+  segmented 30/60/90 pills and All/Clicked/Reported/No-action tabs (native dropdowns),
+  the Chats badge/theme toggle/avatar (the dashboard follows the viewer's workspace
+  theme), and Lakebase-backed chats. The native "Ask Genie" bar replaces the chat
+  drawer, and a Vega tooltip on each KPI's lineage icon replaces the lineage popover.
 
 ---
 
