@@ -120,10 +120,14 @@ def main() -> int:
                 sql = sql.replace(f"IDENTIFIER(:{key})", f"`{value}`" if "." not in value
                                   else ".".join(f"`{p}`" for p in value.split(".")))
                 sql = sql.replace(f":{key}", value)
+            # Each call is its own session, so a `USE SCHEMA` statement does not
+            # carry over to the next one -- pin catalog/schema on every call.
             cmd = [
                 "databricks", "api", "post", "/api/2.0/sql/statements",
                 "--json", json.dumps({
                     "warehouse_id": cfg["warehouse_id"],
+                    "catalog": cfg["catalog"],
+                    "schema": cfg["schema"],
                     "statement": sql,
                     "wait_timeout": "50s",
                 }),

@@ -320,6 +320,9 @@ resources:
               - "--load_synthetic_data=${var.load_synthetic_data}"
               - "--catalog=${var.catalog}"
               - "--schema=${var.schema}"
+              # Serverless exec()s the file with no __file__; tell it where the
+              # synced tree (and pipelines/lib) lives.
+              - "--files_root=${workspace.file_path}"
       # Developers get CAN_MANAGE so they can run/inspect the seed job on a
       # sandbox; user_group only needs to see runs.
       permissions:

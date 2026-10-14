@@ -36,7 +36,19 @@ from pyspark.sql.types import (
 # The generator + config live under pipelines/lib (kept as a helper library, no
 # longer a deployed pipeline). Make them importable when this file is run as a
 # standalone spark_python_task from the synced workspace tree.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipelines"))
+#
+# A serverless spark_python_task runs the file via exec() with no `__file__`, so
+# the job passes the synced bundle root as --files_root. It is read straight off
+# argv because the imports below need it before argparse runs; `__file__` is the
+# fallback for running the script locally.
+def _files_root() -> Path:
+    for arg in sys.argv[1:]:
+        if arg.startswith("--files_root="):
+            return Path(arg.split("=", 1)[1])
+    return Path(__file__).resolve().parent.parent
+
+
+sys.path.insert(0, str(_files_root() / "pipelines"))
 
 from lib.config import load_pipeline_config  # noqa: E402
 from lib.generator import default_now_ms, generate_gold  # noqa: E402
@@ -83,6 +95,7 @@ def main() -> int:
     ap.add_argument("--load_synthetic_data", default="false")
     ap.add_argument("--catalog", required=True)
     ap.add_argument("--schema", required=True)
+    ap.add_argument("--files_root", default=None)  # consumed by _files_root() above
     args = ap.parse_args()
 
     # The gate. Nothing is written unless this is explicitly true, so the job is
@@ -123,4 +136,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Only raise on failure: under a serverless spark_python_task even
+    # SystemExit(0) is reported as a failed run.
+    rc = main()
+    if rc:
+        raise SystemExit(rc)
