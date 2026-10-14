@@ -16,9 +16,13 @@ from fastapi.staticfiles import StaticFiles
 
 from core.auth import OBOMiddleware
 from core.config import load_config
-from core.db import close_lakebase_pool, init_lakebase_pool
+from core.db import (
+    close_lakebase_pool,
+    init_lakebase_pool,
+    start_lakebase_warmup,
+    stop_lakebase_warmup,
+)
 from core.dependencies import set_global_config
-from core.state import run_state_migrations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("cyber_unified")
@@ -38,13 +42,22 @@ async def lifespan(app: FastAPI):
         [d.key for d in config.domains],
     )
 
-    # Initialize Lakebase pool if configured, then bootstrap app-owned state tables
+    # Create the Lakebase pool (lazy: min_size=0, so no connection is opened here)
+    # and then wake + bootstrap it IN THE BACKGROUND.
+    #
+    # Startup must not wait on Lakebase. It scales to zero, and connecting is what
+    # wakes it -- but that cold start outlasts the Databricks Apps startup health
+    # check, so doing it inline meant "Waiting for application startup." never
+    # became "Application startup complete." and the platform killed the app
+    # mid-wake. Lakebase holds only app state (preferences/chats/sessions); KPIs
+    # read the SQL warehouse, so the app is fully useful before it is ready.
     await init_lakebase_pool(config)
-    await run_state_migrations(config)
+    start_lakebase_warmup(config)
 
     yield
 
     # Shutdown
+    await stop_lakebase_warmup()
     await close_lakebase_pool()
     logger.info("CyberUnified shutdown complete")
 
