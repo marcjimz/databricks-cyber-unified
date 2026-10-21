@@ -1,0 +1,86 @@
+name: Deploy (reusable)
+
+# One deploy recipe for every promotion-lane target: validate -> deploy -> run app.
+# Callers pick the target and its GitHub environment; the environment carries the
+# service-principal secrets AND (for tst/prd) the required-reviewer gate, so the
+# job below does not start until a reviewer approves it.
+#
+# NOTHING in the data layer is created: the app reads an already-published metric
+# view (see AGENTS.md). The built SPA (app/frontend/dist) is committed, so there is
+# no build step here.
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: databricks.yml target (databricks_dev | databricks_tst | databricks_prd)
+        required: true
+        type: string
+      environment:
+        description: GitHub environment holding this target's secrets + gate (dev | tst | prd)
+        required: true
+        type: string
+      ref:
+        description: Git ref to deploy (empty = the triggering commit)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.target }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Authenticate as the ${{ inputs.environment }} service principal
+        id: auth
+        uses: ./.github/actions/databricks-auth
+        with:
+          target: ${{ inputs.target }}
+          host: ${{ secrets.DATABRICKS_HOST }}
+          client-id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          client-secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
+      - name: Validate, deploy, start app
+        if: steps.auth.outputs.configured == 'true'
+        env:
+          TARGET: ${{ inputs.target }}
+          # The Postgres role that owns the app database = the DEPLOYING identity's
+          # Lakebase role. Locally that is your user (databricks.yml default); in CI
+          # it is this service principal's role, set per environment.
+          OWNER_ROLE: ${{ vars.LAKEBASE_OWNER_ROLE }}
+        run: |
+          set -euo pipefail
+          VARS=()
+          if [ -n "$OWNER_ROLE" ]; then VARS+=(--var "lakebase_owner_role=$OWNER_ROLE"); fi
+          databricks bundle validate -t "$TARGET" "${VARS[@]}"
+          # A first deploy into a fresh environment can partially fail while Lakebase
+          # provisions the project asynchronously (make setup's two passes); retry once.
+          databricks bundle deploy -t "$TARGET" "${VARS[@]}" || {
+            echo "::warning::first deploy pass failed; retrying once (Lakebase provisions asynchronously)"
+            sleep 60
+            databricks bundle deploy -t "$TARGET" "${VARS[@]}"
+          }
+          databricks bundle run -t "$TARGET" "${VARS[@]}" cyber_unified_app
+
+      - name: Summary
+        if: always()
+        env:
+          TARGET: ${{ inputs.target }}
+          CONFIGURED: ${{ steps.auth.outputs.configured }}
+        run: |
+          if [ "$CONFIGURED" != "true" ]; then
+            echo "### $TARGET deploy skipped :warning: (no credentials in this environment)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Deployed \`$TARGET\` @ \`$(git rev-parse --short HEAD)\` :rocket:" >> "$GITHUB_STEP_SUMMARY"
+          fi

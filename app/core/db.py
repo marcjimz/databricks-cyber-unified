@@ -87,7 +87,9 @@ def _lakebase_dsn(
     Host is resolved from the bound endpoint (``_resolve_host``); the Postgres
     username is the SP's DATABRICKS_CLIENT_ID (Lakebase authenticates the SP as a
     Postgres role named for its client id). PGUSER / PGPORT / PGDATABASE env vars
-    override for local/dev.
+    override for local/dev, as do DB_USERNAME / DB_NAME -- the keys the Lakebase
+    SCM extension writes to .env for the Lakebase branch paired with the checked-out
+    git branch.
 
     ``search_path`` pins the session schema resolution as a libpq connection
     *option* (session-level, so it survives the pool's between-checkout reset,
@@ -96,8 +98,16 @@ def _lakebase_dsn(
     """
     host = _resolve_host(config)
     port = os.environ.get("PGPORT", "5432")
-    dbname = os.environ.get("PGDATABASE") or config.lakebase.database_name
-    pg_user = os.environ.get("PGUSER") or os.environ.get("DATABRICKS_CLIENT_ID", "")
+    dbname = (
+        os.environ.get("PGDATABASE")
+        or os.environ.get("DB_NAME")
+        or config.lakebase.database_name
+    )
+    pg_user = (
+        os.environ.get("PGUSER")
+        or os.environ.get("DB_USERNAME")
+        or os.environ.get("DATABRICKS_CLIENT_ID", "")
+    )
     dsn = (
         f"host={host} port={port} dbname={dbname} "
         f"user={pg_user} password={password} sslmode=require"

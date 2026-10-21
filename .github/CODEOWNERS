@@ -1,0 +1,5 @@
+# The release path and the deploy contract. Release approvals themselves are
+# enforced by the tst/prd GitHub environments' required reviewers (README -> CI/CD).
+/.github/           @marcjimz
+/databricks.yml     @marcjimz
+/app/migrations/    @marcjimz

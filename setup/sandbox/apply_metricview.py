@@ -3,16 +3,16 @@
 
 On a real target the UC metric view ALREADY EXISTS and is owned by the customer --
 the app is told its name (``domains[].metric_view.name`` in cyber-unified.yaml) and
-just reads it. This script only EMULATES that on the sandbox, over the synthetic
-gold written by ``make seed sandbox``, so the same config resolves locally.
+just reads it. This script only EMULATES that on databricks_dev, over the synthetic
+gold written by ``make seed dev``, so the same config resolves there.
 
 It is deliberately NOT a bundle resource and NOT a deploy step: it issues DDL
 (``CREATE OR REPLACE VIEW`` / ``CREATE VIEW ... WITH METRICS``), which must never
-run against a customer workspace. Invoke it via ``make sandbox-metricview sandbox``,
+run against a customer workspace. Invoke it via ``make sandbox-metricview dev``,
 which refuses any other target.
 
 Resolves the catalog/schema/warehouse from the bundle itself (``bundle summary``),
-so nothing is hardcoded and it follows whatever the sandbox target declares.
+so nothing is hardcoded and it follows whatever the dev target declares.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ def _run(cmd: list[str]) -> str:
     return proc.stdout
 
 
-def _bundle_vars(target: str, profile: str | None) -> dict[str, str]:
-    """Read catalog/schema/warehouse_id/source table out of the bundle target."""
+def _bundle_vars(target: str, profile: str | None) -> tuple[dict[str, str], str | None]:
+    """Read catalog/schema/warehouse_id/source table + auth profile out of the bundle target."""
     cmd = ["databricks", "bundle", "summary", "-t", target, "-o", "json"]
     if profile:
         cmd += ["-p", profile]
@@ -60,7 +60,9 @@ def _bundle_vars(target: str, profile: str | None) -> dict[str, str]:
     missing = [k for k, v in resolved.items() if not v]
     if missing:
         sys.exit(f"error: bundle target {target!r} left these unresolved: {missing}")
-    return resolved
+    # The target names its auth profile; the raw `databricks api` calls don't read
+    # the bundle, so carry it over unless one was passed explicitly.
+    return resolved, profile or (summary.get("workspace") or {}).get("profile")
 
 
 def _statements(path: Path) -> list[str]:
@@ -100,14 +102,14 @@ def main() -> int:
     ap.add_argument("--profile", default=None)
     args = ap.parse_args()
 
-    if args.target != "databricks_sandbox":
+    if args.target != "databricks_dev":
         sys.exit(
-            f"refusing to run against {args.target!r}: this is a SANDBOX-ONLY "
-            "utility that issues DDL. Real targets already publish their own "
-            "metric view."
+            f"refusing to run against {args.target!r}: this is a SANDBOX utility "
+            "that issues DDL, allowed only on databricks_dev. Real targets already "
+            "publish their own metric view."
         )
 
-    cfg = _bundle_vars(args.target, args.profile)
+    cfg, profile = _bundle_vars(args.target, args.profile)
     print(f"==> sandbox metric view in {cfg['catalog']}.{cfg['schema']} "
           f"over {cfg['source_table']} (warehouse {cfg['warehouse_id']})")
 
@@ -128,8 +130,8 @@ def main() -> int:
                     "wait_timeout": "50s",
                 }),
             ]
-            if args.profile:
-                cmd += ["-p", args.profile]
+            if profile:
+                cmd += ["-p", profile]
             result = json.loads(_run(cmd))
             state = (result.get("status") or {}).get("state")
             if state != "SUCCEEDED":

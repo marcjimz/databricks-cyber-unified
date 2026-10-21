@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Seed the synthetic OCSF gold tables into UC -- SANDBOX ONLY, and GATED.
+"""Seed the synthetic OCSF gold tables into UC -- databricks_dev ONLY, and GATED.
 
 This replaces the former Lakeflow declarative pipeline (`cyber_unified_pipeline`).
 Synthetic gold is a DEVELOPMENT AID, not part of the application: real targets
-(edp_dev/prod) read the customer's own tables, so nothing here should ever be
+(edp_dev) read the customer's own tables, and tst/prd read dev's, so nothing here should ever be
 deployed or run against them. Mirrors the bluebird `seed_demo_data` idiom --
 a gated `spark_python_task`, never a deploy step.
 
 The job NEVER writes anything unless `--load_synthetic_data=true` resolves true;
-otherwise it exits 0 as a no-op. Invoke via `make seed sandbox`, which is a
+otherwise it exits 0 as a no-op. Invoke via `make seed dev`, which is a
 SEPARATE target from `make deploy`.
 
 Schema-compatible with the real CyberArk `phishing_detail` federated table the

@@ -1,0 +1,65 @@
+name: Release
+
+# Publishing a GitHub Release promotes that tag: databricks_tst, then
+# databricks_prd. Each job runs in a protected GitHub environment (tst, prd) whose
+# REQUIRED REVIEWER must approve before it starts -- two separate human gates, and
+# prd cannot start until tst has deployed. Only tags on main are releasable.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)deploy, e.g. v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag must exist and be on main
+        id: tag
+        env:
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse --verify "refs/tags/${TAG}^{commit}")
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::release tag $TAG ($SHA) is not on main -- cut releases from main only."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG ($SHA)"
+
+  tst:
+    needs: prepare
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      target: databricks_tst
+      environment: tst
+      ref: ${{ needs.prepare.outputs.tag }}
+
+  prd:
+    needs: [prepare, tst]
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      target: databricks_prd
+      environment: prd
+      ref: ${{ needs.prepare.outputs.tag }}
