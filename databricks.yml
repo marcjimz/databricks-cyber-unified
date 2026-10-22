@@ -12,7 +12,7 @@
 #                            (the branch is protected, so declaring it makes DAB
 #                            try to delete something the API refuses to delete).
 #   postgres_databases    -> the logical Postgres database the app connects to
-#   jobs                  -> the GATED synthetic-gold seed (sandbox only)
+#   jobs                  -> the GATED synthetic-gold seed (databricks_dev only)
 #   apps                  -> the FastAPI + React dashboard
 #
 # The semantic layer is a Unity Catalog METRIC VIEW that ALREADY EXISTS on the
@@ -86,7 +86,7 @@ variables:
   # Per-environment suffix so dev/tst/prd deploys coexist in a shared workspace
   # without name collisions (bluebird pattern). Applied to the workspace-level
   # RESOURCE names -- app + Lakebase project/database. Each target sets it
-  # (_dev / _tst / _prd); empty by default (sandbox uses a bare name).
+  # (-dev / -tst / -prd); empty by default (a bare name).
   # NOTE: this does NOT suffix the UC catalog/schema -- those are bring-your-own,
   # fixed, and often un-createable by the deployer (see catalog/schema below).
   env_suffix:
@@ -154,8 +154,8 @@ variables:
     description: >-
       GATE for the synthetic-gold seed job (cyber_unified_seed_job). The job is a
       no-op unless this is explicitly true, so it defaults FALSE -- real-data
-      targets must never seed over the customer's tables. The sandbox turns it on
-      via `make seed sandbox`. This gates the SEED ONLY -- the app reads an
+      targets must never seed over the customer's tables. databricks_dev turns it
+      on via `make seed dev`. This gates the SEED ONLY -- the app reads an
       already-published metric view and is unaffected.
     default: false
   # ── SANDBOX-UTILITY-ONLY variable ──
@@ -295,13 +295,12 @@ resources:
   # any real target.
 
   jobs:
-    # ── Synthetic gold seed -- SANDBOX ONLY, and GATED (bluebird idiom) ──
+    # ── Synthetic gold seed -- databricks_dev ONLY, and GATED (bluebird idiom) ──
     # NEVER writes anything unless var.load_synthetic_data resolves true (default
     # false), so it is inert even if it lands on a target that should not seed. It
-    # is NOT part of `make deploy` -- run it explicitly with `make seed sandbox`.
+    # is NOT part of `make deploy` -- run it explicitly with `make seed dev`.
     #
-    # Real-data targets (edp_dev/prod) have their own tables and never run this;
-    # the sandbox uses it to MIMIC the customer's schema so the same metric-view
+    # Real-data targets (edp_dev) and tst/prd never run this; databricks_dev uses it to MIMIC the customer's schema so the same metric-view
     # shape works against both.
     cyber_unified_seed_job:
       name: "[${bundle.target}] cyber-unified-seed-synthetic-gold (gated)"
@@ -334,7 +333,7 @@ resources:
   apps:
     cyber_unified_app:
       # env_suffix keeps dev/tst/prd app names distinct in a shared workspace
-      # (e.g. cyber-unified-dev). Empty on the sandbox -> bare name.
+      # (e.g. cyber-unified-dev). Empty suffix -> bare name.
       name: "cyber-unified${var.env_suffix}"
       description: "CyberUnified Cybersecurity Posture Dashboard"
       source_code_path: ./app
@@ -429,41 +428,79 @@ resources:
         - level: CAN_USE
           group_name: ${var.user_group}
 
-# NOTE on workspace host: `workspace.host` is an AUTHENTICATION field, which the
-# Databricks CLI resolves BEFORE variable substitution -- so it cannot be a
-# ${var.*} placeholder (the CLI errors: "Variable interpolation is not supported
-# for fields that configure authentication"). It is therefore intentionally
-# OMITTED here so the host resolves from the ambient environment, which is the
-# portable default: deploying from a Databricks Git folder targets THAT
-# workspace automatically; from a laptop it uses the active CLI profile or the
-# DATABRICKS_HOST env var. To pin a host explicitly, set DATABRICKS_HOST (or use
-# `-p <profile>` / `databricks auth login`) -- do NOT hardcode it back in here.
+# NOTE on workspace auth: `workspace.host` / `workspace.profile` are
+# AUTHENTICATION fields, which the Databricks CLI resolves BEFORE variable
+# substitution -- so they cannot be ${var.*} placeholders (the CLI errors:
+# "Variable interpolation is not supported for fields that configure
+# authentication"). They are therefore literals per target: the promotion lane
+# (databricks_dev/tst/prd) names a PROFILE, so repointing an environment is a
+# one-line profile edit; edp_dev pins its host.
 targets:
-  # ── databricks_sandbox: FEVM demo/dev box (SYNTHETIC data) ──
-  # The working environment for building + testing the app end-to-end, and the
-  # ONLY target that generates anything. Two sandbox-only utility steps EMULATE
-  # what a real workspace already provides:
-  #   make seed sandbox              -> write the synthetic `phishing_detail` gold
-  #                                     table (mimics the real CyberArk schema)
-  #   make sandbox-metricview sandbox -> publish a metric view over it, so
-  #                                     metric_view.name resolves here too
-  # Neither is a deploy step; neither exists on a real target.
-  # `workspace.host` is a literal per-target (it cannot be a ${var} -- it
-  # configures auth), which pins the deploy to the FEVM sandbox.
-  databricks_sandbox:
+  # ── databricks_dev / databricks_tst / databricks_prd: the promotion lane ──
+  # Three SIDE-BY-SIDE stacks of the same bundle. Today all three point at the
+  # SAME FEVM workspace (same profile) and are kept apart purely by resource NAME:
+  # env_suffix + lakebase_project + lakebase_database make every workspace object
+  # distinct (cyber-unified-dev / -tst / -prd apps, Lakebase projects, jobs).
+  #
+  # PORTABILITY CONTRACT: `workspace.profile` is the ONE per-environment knob. A
+  # customer adopting this repo edits the three profile names below to their own
+  # `databricks auth profiles` entries (one per workspace, or the same profile
+  # three times for one workspace) -- nothing else, unless their catalog/schema/
+  # warehouse differ from these FEVM values. CI writes a ~/.databrickscfg entry
+  # under the SAME profile name (.github/actions/databricks-auth), so the profile
+  # is the single source of truth for local AND CI auth.
+  #
+  # Shared root_path (not per-user): the CI service principal and a human deploying
+  # by hand must share ONE deploy state per environment, or the second deployer
+  # tries to re-create `cyber-unified-<env>` and fails on the name collision.
+  #
+  # Promotion: merge to main -> CI deploys dev. Publishing a GitHub Release ->
+  # tst, then prd, each behind a GitHub environment with a required reviewer
+  # (.github/workflows/release.yml). `make deploy tst|prd` refuses outside CI.
+  databricks_dev:
     default: true
     # No `mode: development` (bluebird pattern) -- avoid dev-mode name-mangling so
-    # object names are stable/predictable. The top-level per-user `root_path`
-    # already isolates deploy state between developers on the shared FEVM.
-    # (NOTE: this renames the schema from the old dev-prefixed
-    # `dev_<user>_posture` to plain `posture` on the next deploy -- nothing
-    # hardcodes the old name, and the app resolves the schema from CYBERUNIFIED_SCHEMA.)
+    # object names are stable/predictable.
     workspace:
-      host: https://fevm-real-time-mode-demo.cloud.databricks.com
+      profile: fe-vm-real-time-mode-demo
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     variables:
-      # This FEVM has no `cyber-unified` catalog; use its shared demo catalog (the
-      # bundle creates the `posture` schema inside it). Serverless Starter
-      # warehouse serves the metric-view KPI reads (auto-starts on query).
+      env_suffix: "-dev"
+      # Hyphens, not underscores: lakebase_database feeds database_id, which must
+      # match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$.
+      lakebase_project: cyber-unified-dev
+      lakebase_database: cyber-unified-dev
+      # This FEVM has no `cyber-unified` catalog; its shared demo catalog holds the
+      # `posture` schema + metric view. dev is the ONLY target that may seed it or
+      # publish the emulated metric view (`make seed dev`, `make sandbox-metricview
+      # dev`); tst and prd read the same view. Serverless Starter warehouse.
+      catalog: real_time_mode_demo_catalog
+      warehouse_id: "1916c91c970b63b5"
+
+  databricks_tst:
+    workspace:
+      profile: fe-vm-real-time-mode-demo
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      env_suffix: "-tst"
+      lakebase_project: cyber-unified-tst
+      lakebase_database: cyber-unified-tst
+      catalog: real_time_mode_demo_catalog
+      warehouse_id: "1916c91c970b63b5"
+
+  # The released application, sourced from a release tag on main. load_synthetic_data
+  # stays FALSE (its default) and nothing seeds here.
+  databricks_prd:
+    mode: production
+    workspace:
+      profile: fe-vm-real-time-mode-demo
+      # `mode: production` requires a non-user-scoped root_path -- the shared one
+      # all three promotion targets use.
+      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      env_suffix: "-prd"
+      lakebase_project: cyber-unified-prd
+      lakebase_database: cyber-unified-prd
       catalog: real_time_mode_demo_catalog
       warehouse_id: "1916c91c970b63b5"
 
@@ -516,15 +553,3 @@ targets:
       manage_group: DPG_CYBERSECURITY_QA
       user_group: DPG_CYBERSECURITY_QA
       developer_group: DPG_CYBERSECURITY_DEVELOPER
-
-  # Prod: the released application, sourced from `main`. Real customer data, so
-  # load_synthetic_data stays FALSE (its default) and nothing seeds here.
-  prod:
-    mode: production
-    # `mode: production` requires an explicit, non-user-scoped root_path so the
-    # deploy is a single shared copy (not prefixed per deploying user like dev).
-    workspace:
-      root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
-    # Permissions are group-driven and identical across targets (the per-resource
-    # blocks reference ${var.manage_group} / ${var.user_group}), so prod needs no
-    # permission override here.

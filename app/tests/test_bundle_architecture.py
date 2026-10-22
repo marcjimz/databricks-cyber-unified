@@ -159,12 +159,12 @@ def test_no_dangling_resource_or_var_references(raw: str, bundle: dict) -> None:
 def test_real_data_targets_do_not_enable_seeding(bundle: dict) -> None:
     """No real-data target may turn the seed gate on."""
     for name, target in bundle.get("targets", {}).items():
-        if name == "databricks_sandbox":
+        if name == "databricks_dev":
             continue
         value = (target.get("variables") or {}).get("load_synthetic_data")
         assert value in (None, False), (
-            f"target {name!r} sets load_synthetic_data={value!r}. Only the "
-            "sandbox may seed; real-data targets must leave it off."
+            f"target {name!r} sets load_synthetic_data={value!r}. Only "
+            "databricks_dev may seed; every other target must leave it off."
         )
 
 
@@ -363,3 +363,97 @@ def test_targets_declare_every_group_they_rely_on(bundle: dict) -> None:
             f"target {name!r} sets {sorted(declared)} but not {sorted(missing)}; it "
             "would inherit a DPG_CYBER360_* default that does not exist there."
         )
+
+
+# ---------------------------------------------------------------------------
+# Promotion lane: databricks_dev -> databricks_tst -> databricks_prd
+# ---------------------------------------------------------------------------
+
+LANE = ("databricks_dev", "databricks_tst", "databricks_prd")
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+def test_promotion_lane_targets_are_portable_by_profile(bundle: dict) -> None:
+    """dev/tst/prd are repointed by editing ONE value: `workspace.profile`.
+
+    A pinned `host` would make the customer edit hosts too, and could disagree
+    with the profile. CI writes credentials under the same profile name
+    (.github/actions/databricks-auth), so the profile is the single auth knob.
+    """
+    targets = bundle["targets"]
+    for name in LANE:
+        assert name in targets, f"promotion-lane target {name!r} is missing"
+        ws = targets[name].get("workspace") or {}
+        assert ws.get("profile"), f"{name} must name its auth profile (workspace.profile)"
+        assert "host" not in ws, f"{name} pins workspace.host; use workspace.profile only"
+
+
+def test_promotion_lane_shares_deploy_state_per_environment(bundle: dict) -> None:
+    """CI (service principal) and humans must share ONE deploy state per env.
+
+    A per-user root_path gives each deployer its own state, so the second one
+    tries to re-create `cyber-unified-<env>` and fails on the name collision.
+    """
+    for name in LANE:
+        root = (bundle["targets"][name].get("workspace") or {}).get("root_path", "")
+        assert root.startswith("/Workspace/Shared/"), (
+            f"{name} root_path {root!r} is per-user; it must be a shared path")
+        assert "current_user" not in root, f"{name} root_path is per-user: {root!r}"
+
+
+def test_promotion_lane_resources_never_collide(bundle: dict) -> None:
+    """dev/tst/prd can share a workspace only if every workspace object is distinct."""
+    for var in ("env_suffix", "lakebase_project", "lakebase_database"):
+        values = [(bundle["targets"][n].get("variables") or {}).get(var) for n in LANE]
+        assert all(values), f"every lane target must set {var}: {dict(zip(LANE, values))}"
+        assert len(set(values)) == len(LANE), f"{var} collides across the lane: {values}"
+
+
+def _workflow(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())
+
+
+def _on(workflow: dict) -> dict:
+    # PyYAML reads the bare key `on:` as boolean True.
+    return workflow.get("on") or workflow.get(True) or {}
+
+
+def test_tst_and_prd_deploy_only_from_a_gated_release() -> None:
+    """tst/prd move only on a published Release, each behind its own environment.
+
+    The environment's required reviewer IS the human gate, so every job that
+    deploys tst/prd must name it, prd must wait for tst, and no push-triggered
+    workflow may reach either target.
+    """
+    release = _workflow("release.yml")
+    assert "push" not in _on(release), "release.yml must not run on push"
+    assert "release" in _on(release), "release.yml must run on a published Release"
+    jobs = release["jobs"]
+    for job, (target, env) in {"tst": ("databricks_tst", "tst"),
+                               "prd": ("databricks_prd", "prd")}.items():
+        assert jobs[job]["with"]["target"] == target
+        assert jobs[job]["with"]["environment"] == env, (
+            f"release job {job!r} must run in the {env!r} environment (the human gate)")
+    assert "tst" in jobs["prd"]["needs"], "prd must not start before tst has deployed"
+
+    deploy = _workflow("deploy.yml")
+    assert deploy["jobs"]["deploy"]["environment"] == "${{ inputs.environment }}", (
+        "the reusable deploy job must run in the caller's environment, or the gate is skipped")
+
+    for path in WORKFLOWS.glob("*.yml"):
+        if path.name == "release.yml":
+            continue
+        text = path.read_text()
+        for target in ("databricks_tst", "databricks_prd"):
+            assert f"target: {target}" not in text, (
+                f"{path.name} deploys {target}; only release.yml may")
+
+
+def test_make_refuses_release_targets_outside_ci() -> None:
+    """Locally, tst/prd deploys go through the release workflow, not `make`."""
+    makefile = (REPO / "Makefile").read_text()
+    assert re.search(r"RELEASE_TARGETS\s*:=\s*databricks_tst databricks_prd", makefile)
+    for recipe in ("deploy", "setup", "app"):
+        assert re.search(rf"^{recipe}: guard-release\b", makefile, re.M), (
+            f"`make {recipe}` must depend on guard-release")
+

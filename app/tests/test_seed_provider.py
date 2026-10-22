@@ -32,14 +32,20 @@ def test_scorecard_computes_measures_from_config(config):
     # Every configured domain gets a health card, computed generically.
     assert {d.key for d in sc.domains} == {d.key for d in config.domains}
     # Click rate is a percent measure -> "NN.NN%".
-    click = next(k for k in sc.top_line_kpis if k.key == "phishing_click_rate")
+    click = next(k for k in sc.top_line_kpis if k.key == "Click Rate")
     assert click.value.endswith("%") and float(click.value[:-1]) > 0
 
 
 def test_domain_metrics_has_trend(config):
     dm = asyncio.run(SeedProvider(config).get_domain_metrics("phishing", 30))
-    assert len(dm.kpis) == len(config.get_domain("phishing").metric_view.measures)
-    assert dm.trends["daily"], "expected a daily trend series over the window"
+    domain = config.get_domain("phishing")
+    assert len(dm.kpis) == len(domain.metric_view.measures)
+    # The trend is opt-in: the shipped config sets time_dimension "" (the live
+    # view has no date dimension), and then there is no series to draw.
+    if domain.metric_view.time_dimension:
+        assert dm.trends["daily"], "expected a daily trend series over the window"
+    else:
+        assert not dm.trends.get("daily")
 
 
 def test_detail_rows_are_config_driven(config):
@@ -56,7 +62,7 @@ def test_measure_math_matches_metric_view_expr(config):
     """The seed engine evaluates the SAME portable expression the metric view
     uses, so a config edit propagates to local dev with no code change."""
     domain = config.get_domain("phishing")
-    click = next(m for m in domain.metric_view.measures if m.name == "phishing_click_rate")
+    click = next(m for m in domain.metric_view.measures if m.name == "Click Rate")
     # Portable SQL (identical to mv_phishing.sql) -- no engine-specific funcs.
     assert "try_divide" not in click.expression
     assert "NULLIF(COUNT(*), 0)" in click.expression

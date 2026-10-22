@@ -56,7 +56,7 @@ new provider backends.
    bring-your-own is the **default path**. Loading is controlled by a **DAB variable**
    `load_synthetic_data` (**default `false`**) that gates the sandbox seed job
    (`cyber_unified_seed_job` → `scripts/seed_synthetic_gold.py`), which is a **no-op**
-   unless explicitly turned on by `make seed sandbox`. It is never part of a deploy,
+   unless explicitly turned on by `make seed dev`. It is never part of a deploy,
    so a real-data target can never seed over the customer's tables. No canonical
    public OCSF synthetic corpus exists, so we generate our own (config-driven
    generator in `pipelines/lib/generator.py` — a plain helper library, not a deployed
@@ -85,7 +85,7 @@ new provider backends.
    `INSUFFICIENT_PERMISSIONS`; the metric-view `sql_task` re-published a view that
    already existed.) Generating a metric view is **emulation of what a real workspace
    already provides** — a sandbox utility (`setup/sandbox/*.sql` applied by
-   `make sandbox-metricview sandbox`), not a bundle resource and not a deploy step.
+   `make sandbox-metricview dev`), not a bundle resource and not a deploy step.
    `app/tests/test_bundle_architecture.py` enforces this; a red test there is the
    architecture rejecting your change.
 
@@ -133,8 +133,8 @@ Provider layer (app/providers/)                                                a
 Genie Spaces + SQL Warehouse ──▶ interactive Genie drawer (OBO, UC-enforced)
 
 SANDBOX-ONLY EMULATION (never a bundle resource, never a deploy step, never a real target):
-   make seed sandbox               → cyber_unified_seed_job → scripts/seed_synthetic_gold.py (GATED, default off)
-   make sandbox-metricview sandbox → setup/sandbox/{phishing_source,mv_phishing}.sql via apply_metricview.py
+   make seed dev                   → cyber_unified_seed_job → scripts/seed_synthetic_gold.py (GATED, default off)
+   make sandbox-metricview dev     → setup/sandbox/{phishing_source,mv_phishing}.sql via apply_metricview.py
 ```
 
 **Two planes, cleanly separated:**
@@ -230,9 +230,9 @@ A measure (the atomic unit) looks like:
 
 To onboard a new domain: (a) add a `domains[]` entry whose `metric_view.name` is the
 metric view that environment **already publishes**, plus its measures and any
-top-line KPIs, then deploy. (b) **On the sandbox only**, if you want to emulate that
-view locally, add a `setup/sandbox/mv_<key>.sql` and run `make seed sandbox` +
-`make sandbox-metricview sandbox`. **No component changes, no bundle resources.**
+top-line KPIs, then deploy. (b) **On databricks_dev only**, if you want to emulate that
+view, add a `setup/sandbox/mv_<key>.sql` and run `make seed dev` +
+`make sandbox-metricview dev`. **No component changes, no bundle resources.**
 
 ---
 
@@ -266,24 +266,25 @@ We implement a lightweight, dependency-free version of it here; graduate to the
 full kit (Alembic/Flyway runners, schema diffing, rollback snapshots, and the
 MCP skills that drive it from coding agents) when the team needs it.
 
-**Feature flow (push a `feature/**` branch):**
+**PR flow (any same-repo PR to `main`):**
 
-1. `ci.yml` runs the cheap gate — ruff, SPA build, migration + bundle validation.
-2. `feature-deploy.yml` forks a **paired Lakebase branch** off `production`
-   (`.github/scripts/lakebase_branch.py create`) — its own copy-on-write data.
-   A fork **auto-inherits** an RW endpoint (named `primary`) and the parent's
-   roles/grants (branches carry a 7-day TTL as a cleanup safety net). It does
-   **NOT** deploy a per-branch app: Databricks Apps are a per-environment service
-   (compute + URL + per-user OAuth consent), not per-PR previews. Test the app
-   against the fork via `LAKEBASE_ENDPOINT_NAME` (local dev-loop or the shared
-   dev app). The valuable, cheap isolation is the Lakebase branch, not the app.
-3. On PR close, `feature-teardown.yml` deletes the paired branch (its RW endpoint
-   cascades).
+1. `ci.yml` runs the gate — ruff, pytest (incl. the architecture guard suite), SPA
+   build + dist-current, migration check, `bundle validate -t databricks_dev`.
+2. `pr-lakebase.yml` forks a **paired Lakebase branch** `pr-<N>` off
+   databricks_dev's `production` (`.github/scripts/lakebase_branch.py create`) —
+   its own copy-on-write data. A fork **auto-inherits** an RW endpoint and the
+   parent's roles/grants (7-day TTL as a cleanup safety net). It does **NOT**
+   deploy a per-PR app: Databricks Apps are a per-environment service. Test against
+   the fork with `make local` (`LAKEBASE_HOST` / `LAKEBASE_ENDPOINT_NAME`); locally
+   the Lakebase SCM extension does the same pairing for your own git branch.
+3. On PR close, the same workflow deletes `pr-<N>` (its endpoint cascades).
 
-**Release flow:** promotion to `prod` is a **manual, gated** `workflow_dispatch`
-(`promote.yml`) against the protected `prod` environment. The prod app is always
-sourced from `main` — never a feature branch. (There is no `tst` tier: just
-`dev` + `prod`.)
+**Release flow:** merge to `main` → `deploy-dev.yml` deploys **databricks_dev**.
+Publishing a GitHub Release (a tag on `main`) → `release.yml` deploys
+**databricks_tst**, then **databricks_prd**, each behind its GitHub environment's
+required reviewer — two human gates, prd strictly after tst. All three go through
+the reusable `deploy.yml`. tst/prd never deploy from a push, and `make deploy
+tst|prd` refuses outside CI.
 
 **Best practices for a code/flow update:**
 

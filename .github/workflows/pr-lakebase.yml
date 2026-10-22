@@ -1,0 +1,91 @@
+name: PR Lakebase branch
+
+# Paired git <-> Lakebase branching (Lakebase SCM model): every same-repo PR to
+# main gets an isolated `pr-<N>` Lakebase branch, forked copy-on-write off
+# databricks_dev's `production` branch with its own read-write endpoint, so
+# schema/state experiments never touch shared data. Deleted when the PR closes
+# (merged or abandoned). Locally the Lakebase SCM extension does the same pairing
+# for your git branch and writes the connection into .env.
+#
+# It intentionally does NOT deploy a per-PR app: Apps are a long-running
+# per-environment service. Point a local `make local` at the fork instead.
+#
+# The project is read from databricks.yml (targets.databricks_dev.variables.
+# lakebase_project) -- no separate repo variable to keep in sync.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-lakebase-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  BRANCH_ID: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  branch:
+    name: ${{ github.event.action == 'closed' && 'Delete' || 'Fork' }} Lakebase branch pr-${{ github.event.pull_request.number }}
+    # Fork PRs get no secrets on a public repo; never run there.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install SDK (for the branch script)
+        run: pip install "databricks-sdk>=0.102.0"
+
+      - name: Authenticate
+        id: auth
+        uses: ./.github/actions/databricks-auth
+        with:
+          target: databricks_dev
+          host: ${{ secrets.DATABRICKS_HOST }}
+          client-id: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          client-secret: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+
+      - name: Resolve the Lakebase project
+        if: steps.auth.outputs.configured == 'true'
+        id: project
+        run: echo "id=$(yq -r '.targets.databricks_dev.variables.lakebase_project' databricks.yml)" >> "$GITHUB_OUTPUT"
+
+      - name: Fork pr-<N> off production
+        if: steps.auth.outputs.configured == 'true' && github.event.action != 'closed'
+        run: |
+          python3 .github/scripts/lakebase_branch.py create \
+            --project "${{ steps.project.outputs.id }}" \
+            --source-branch production \
+            --branch-id "$BRANCH_ID" \
+            --endpoint-id "$BRANCH_ID" \
+            --min-cu 0.5 --max-cu 1
+
+      - name: Delete pr-<N> (cascades its endpoint)
+        if: steps.auth.outputs.configured == 'true' && github.event.action == 'closed'
+        run: |
+          python3 .github/scripts/lakebase_branch.py delete \
+            --project "${{ steps.project.outputs.id }}" \
+            --branch-id "$BRANCH_ID"
+
+      - name: Summary
+        if: always()
+        env:
+          CONFIGURED: ${{ steps.auth.outputs.configured }}
+          ACTION: ${{ github.event.action }}
+          PROJECT: ${{ steps.project.outputs.id }}
+        run: |
+          if [ "$CONFIGURED" != "true" ]; then
+            echo "### Lakebase branch skipped :warning: (no credentials in the dev environment)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$ACTION" = "closed" ]; then
+            echo "### Deleted Lakebase branch \`$BRANCH_ID\` in \`$PROJECT\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Lakebase branch \`$BRANCH_ID\` ready in \`$PROJECT\` :deciduous_tree:" >> "$GITHUB_STEP_SUMMARY"
+            echo "Forked from production; deleted automatically when the PR closes." >> "$GITHUB_STEP_SUMMARY"
+          fi

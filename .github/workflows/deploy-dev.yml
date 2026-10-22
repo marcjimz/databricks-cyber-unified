@@ -1,0 +1,20 @@
+name: Deploy dev
+
+# Merge to main -> databricks_dev. No human gate: dev is the integration
+# environment. tst/prd only move on a published GitHub Release (release.yml).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      target: databricks_dev
+      environment: dev

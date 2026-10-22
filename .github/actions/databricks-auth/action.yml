@@ -1,0 +1,73 @@
+name: Databricks auth (bundle target profile)
+description: >-
+  Authenticates the Databricks CLI/SDK as the CI service principal (OAuth M2M)
+  under the PROFILE NAME the given databricks.yml target declares
+  (targets.<target>.workspace.profile). The profile name therefore lives in ONE
+  place -- databricks.yml -- for both local and CI auth: a customer repoints an
+  environment by editing that profile, and CI follows. Sets output
+  `configured=false` (with a warning) when the environment has no secret, so
+  callers can skip instead of failing.
+
+inputs:
+  target:
+    description: databricks.yml target, e.g. databricks_dev
+    required: true
+  host:
+    description: Workspace URL (secret DATABRICKS_HOST)
+    required: false
+    default: ""
+  client-id:
+    description: Service principal application id (secret DATABRICKS_CLIENT_ID)
+    required: false
+    default: ""
+  client-secret:
+    description: Service principal OAuth secret (secret DATABRICKS_CLIENT_SECRET)
+    required: false
+    default: ""
+
+outputs:
+  configured:
+    description: "'true' when credentials were present and the profile was written"
+    value: ${{ steps.auth.outputs.configured }}
+  profile:
+    description: The profile name read from databricks.yml
+    value: ${{ steps.auth.outputs.profile }}
+
+runs:
+  using: composite
+  steps:
+    - uses: databricks/setup-cli@main
+    - id: auth
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+        HOST: ${{ inputs.host }}
+        CLIENT_ID: ${{ inputs.client-id }}
+        CLIENT_SECRET: ${{ inputs.client-secret }}
+      run: |
+        set -euo pipefail
+        PROFILE=$(yq -r ".targets.${TARGET}.workspace.profile // \"\"" databricks.yml)
+        if [ -z "$PROFILE" ]; then
+          echo "::error::target ${TARGET} declares no workspace.profile in databricks.yml"
+          exit 1
+        fi
+        echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+        if [ -z "$HOST" ] || [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::Databricks credentials for ${TARGET} are not configured (environment secrets DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET) -- skipping."
+          exit 0
+        fi
+        umask 077
+        # Targets may share a profile (dev/tst/prd in one workspace) -- write it once.
+        if ! grep -qxF "[${PROFILE}]" "$HOME/.databrickscfg" 2>/dev/null; then
+        cat >> "$HOME/.databrickscfg" <<CFG
+        [${PROFILE}]
+        host          = ${HOST}
+        client_id     = ${CLIENT_ID}
+        client_secret = ${CLIENT_SECRET}
+        CFG
+        fi
+        # The SDK (lakebase_branch.py) reads the same profile.
+        echo "DATABRICKS_CONFIG_PROFILE=$PROFILE" >> "$GITHUB_ENV"
+        echo "configured=true" >> "$GITHUB_OUTPUT"
+        echo "Authenticated ${TARGET} as profile [${PROFILE}]."

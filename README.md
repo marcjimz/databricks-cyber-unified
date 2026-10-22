@@ -95,9 +95,13 @@ data layer, so a deploy succeeds or fails on **deployment alone** — a data-lay
 UC-grant problem can no longer fail it.
 
 ```bash
-make deploy sandbox     # FEVM sandbox
+make deploy dev         # databricks_dev (CI also does this on every merge to main)
 make deploy edp_dev     # Azure EDP DEV, reads the customer's published metric view
 ```
+
+`tst` and `prd` are **release-only**: `make deploy|setup|app tst|prd` refuses outside
+CI (`FORCE=1` is the break-glass override) — publish a GitHub Release instead (see
+[CI/CD](#cicd--promotion-dev--tst--prd)). `make validate tst` is fine.
 
 On a **fresh** workspace use `make setup <env>` instead — it deploys **twice**
 (Lakebase provisions the project/app asynchronously, so dependent objects settle on
@@ -105,12 +109,12 @@ the second pass), then runs the app. Or drive the CLI directly, substituting you
 own `--var` overrides:
 
 ```bash
-# Assume host comes from a Git folder / DATABRICKS_HOST / active profile.
-export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
+# Auth comes from the profile the target names (databricks.yml workspace.profile).
+export VARS="--var lakebase_owner_role=<your-role-id>"
 
-databricks bundle validate -t databricks_sandbox $VARS
-databricks bundle deploy   -t databricks_sandbox $VARS   # on a fresh workspace, run this twice
-databricks bundle run cyber_unified_app -t databricks_sandbox $VARS   # start the app (prints the URL)
+databricks bundle validate -t databricks_dev $VARS
+databricks bundle deploy   -t databricks_dev $VARS   # on a fresh workspace, run this twice
+databricks bundle run cyber_unified_app -t databricks_dev $VARS   # start the app (prints the URL)
 ```
 
 > **Validation warnings are harmless.** `databricks bundle validate` emits
@@ -137,13 +141,18 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
    (it needs no npm/node: the built SPA is committed):
 
    ```bash
-   export VARS="--var catalog=<your_catalog> --var warehouse_id=<id> --var lakebase_owner_role=<your-role-id>"
-   databricks bundle validate -t databricks_sandbox $VARS
-   databricks bundle deploy   -t databricks_sandbox $VARS   # twice on a fresh workspace
-   databricks bundle run cyber_unified_app -t databricks_sandbox $VARS   # app live
+   export VARS="--var lakebase_owner_role=<your-role-id>"
+   databricks bundle validate -t edp_dev $VARS
+   databricks bundle deploy   -t edp_dev $VARS   # twice on a fresh workspace
+   databricks bundle run cyber_unified_app -t edp_dev $VARS   # app live
    ```
 
-5. **Find the running app** under **Compute → Apps → `cyber-unified`** (its
+   > The promotion-lane targets (`databricks_dev/tst/prd`) name a CLI **profile**,
+   > and a workspace terminal has no `~/.databrickscfg`. Deploy those from a laptop
+   > or CI; a Git-folder terminal can deploy them only after you create a profile
+   > with that name there.
+
+5. **Find the running app** under **Compute → Apps → `cyber-unified-<env>`** (its
    URL is also printed by the last step).
 
 > After a `git add app/frontend/dist` rebuild or any code change, **Pull** the Git
@@ -151,37 +160,47 @@ workspace, the host resolves automatically — no `DATABRICKS_HOST` needed.
 
 ### Targets
 
-The bundle defines three targets, and the Makefile takes the env as a **positional
-word** (`make deploy sandbox`):
+The Makefile takes the env as a **positional word** (`make deploy dev`):
 
 | Env word | `databricks.yml` target | What it is |
 |---|---|---|
-| `sandbox` | `databricks_sandbox` | Default. FEVM sandbox, **synthetic** — the only place the seed / metric-view emulation runs. |
+| `dev` | `databricks_dev` | Default. Integration env — CI deploys it on every merge to `main`. The only target that may seed / publish the emulated metric view. |
+| `tst` | `databricks_tst` | Test. Deployed by a published GitHub Release, after your approval. |
+| `prd` | `databricks_prd` | Production (`mode: production`). Deployed by the same Release after tst, after a second approval. |
 | `edp_dev` | `edp_dev` | Azure EDP DEV, reads the **real** published metric view. |
-| `prod` | `prod` | The released app (promoted via `promote.yml`); sets an explicit `workspace.root_path` for `mode: production`. |
+
+**dev / tst / prd are three side-by-side stacks of the same bundle.** Today they
+all live in the FEVM sandbox (same profile) and are kept apart by resource
+**name** — `cyber-unified-dev|tst|prd` apps, Lakebase projects and databases.
+Each target names its auth **profile** (`workspace.profile`) instead of a host,
+so moving an environment to another workspace is a one-line edit: change the
+profile (plus `catalog` / `schema` / `warehouse_id` if that workspace's differ).
+All three share a `/Workspace/Shared/.bundle/...` root path, so CI and a human
+deploying by hand share one deploy state (the CLI warns that Shared is writable by
+all workspace users — a known trade-off).
 
 **Bring-your-own-data is the DEFAULT.** The app reads the metric view you already
 publish — point `domains[].metric_view.name` at it and deploy. Nothing else is
 needed, and no synthetic data is ever written to a real target: the
 `load_synthetic_data` variable (**default `false`**) gates the seed job, which is a
-no-op unless explicitly turned on, and turning it on is a sandbox-only step.
+no-op unless explicitly turned on, and turning it on is a dev-only step.
 
-### Sandbox-only utilities (emulating a real workspace)
+### Sandbox utilities (dev only — emulating a real workspace)
 
-On the FEVM sandbox there is no customer metric view to read, so two guarded
-targets **emulate** one. Neither is a bundle resource, a deploy step, or safe on a
-real target:
+The FEVM sandbox has no customer metric view to read, so two guarded targets
+**emulate** one in the data layer dev/tst/prd share. Neither is a bundle resource
+or a deploy step, and both refuse any target but `databricks_dev`:
 
 ```bash
-make seed sandbox               # write the synthetic gold table (cyber_unified_seed_job, gated)
-make sandbox-metricview sandbox # publish a metric view over that gold
+make seed dev                  # write the synthetic gold table (cyber_unified_seed_job, gated)
+make sandbox-metricview dev    # publish a metric view over that gold
 ```
 
 `make sandbox-metricview` applies `setup/sandbox/phishing_source.sql` +
 `setup/sandbox/mv_phishing.sql` from the CLI (via
-`setup/sandbox/apply_metricview.py`) and **hard-refuses any non-sandbox target**,
-because those files issue `CREATE ... VIEW` DDL. On a real workspace the metric view
-already exists and is owned by you — just name it in the config.
+`setup/sandbox/apply_metricview.py`) because those files issue `CREATE ... VIEW`
+DDL. On a real workspace the metric view already exists and is owned by you —
+just name it in the config.
 
 ---
 
@@ -202,7 +221,7 @@ Deploying to another workspace applies the identical model. Override the names p
 deploy if your groups differ:
 
 ```bash
-databricks bundle deploy -t databricks_sandbox \
+databricks bundle deploy -t databricks_dev \
   --var manage_group=MY_ADMINS --var user_group=MY_USERS
 ```
 
@@ -234,67 +253,72 @@ databricks bundle deploy -t databricks_sandbox \
 
 ---
 
-## CI/CD & feature environments
+## CI/CD & promotion (dev → tst → prd)
 
-GitHub Actions (`.github/workflows/`) automate the flow. Once set up, you get an
-**isolated environment per feature branch** and release-style promotion.
+GitHub Actions (`.github/workflows/`) run the whole path:
 
-### One-time setup
+```
+feature branch ──PR──▶ ci.yml (ruff, pytest + guard suite, SPA build, migrations, validate dev)
+                 └───▶ pr-lakebase.yml  forks Lakebase branch pr-<N> off dev's production
+merge to main ───────▶ deploy-dev.yml   → databricks_dev            (no gate)
+                       pr-lakebase.yml  deletes pr-<N>
+publish Release vX ──▶ release.yml      → databricks_tst  ⏸ approve (tst environment)
+                                        → databricks_prd  ⏸ approve (prd environment)
+```
 
-CI authenticates with **OAuth machine-to-machine (a service principal)** — no
-personal access tokens. Only the client secret is a GitHub *secret*; everything
-else is a plain *variable*.
+Every deploy goes through one reusable workflow, `deploy.yml` (validate → deploy
+→ run app), which runs **inside** the caller's GitHub environment. That is where
+both the credentials and the human gate live. Only tags on `main` can be released.
 
-**1. Create the service principal + OAuth secret** (workspace admin):
-- **Settings → Identity and access → Service principals → Add service principal**
-  (or reuse the app's SP). Note its **Application (client) ID**.
-- On that SP → **Secrets → Generate secret**. Copy the **Client secret** *and*
-  the **Client ID** shown — the secret is displayed only once.
-- Grant the SP what a deploy needs: workspace access (CAN_USE) and `CAN_MANAGE` on
-  the app + bundle resources. (It's the identity CI deploys as.) It needs **no**
-  data-layer privilege — the deploy creates nothing in Unity Catalog, and KPI reads
-  run per-user OBO.
+### One-time GitHub setup
 
-**2. Configure the repo** (**Settings → Secrets and variables → Actions**):
+CI authenticates as a **service principal (OAuth M2M)** — no personal tokens.
+
+**1. Create a service principal per environment** (or one shared, for a single
+workspace). Workspace admin: **Settings → Identity and access → Service principals
+→ Add**, then **Secrets → Generate secret** and copy the client ID + secret (shown
+once). Give it workspace access, the ability to create Apps/jobs/Lakebase
+projects, and membership allowing it to grant the bundle's groups. It needs **no**
+data-layer privilege: deploys create nothing in Unity Catalog and KPI reads run
+per-user OBO.
+
+**2. Create three GitHub environments** (**Settings → Environments**):
+
+| Environment | Required reviewers | Deployment branches/tags | Used by |
+|---|---|---|---|
+| `dev` | none | all (PR validation + `main`) | ci.yml, pr-lakebase.yml, deploy-dev.yml |
+| `tst` | **you** (prevent self-review off) | tags `v*` | release.yml |
+| `prd` | **you** (prevent self-review off) | tags `v*` | release.yml |
+
+In each one, add:
 
 | Kind | Name | Value |
-|------|------|-------|
-| **Secret** | `DATABRICKS_CLIENT_SECRET` | The SP's OAuth **client secret** (from step 1). The only secret. |
-| Variable | `DATABRICKS_HOST` | Target workspace URL, e.g. `https://<ws>.cloud.databricks.com` |
-| Variable | `DATABRICKS_CLIENT_ID` | The SP's application (client) ID |
-| Variable | `CYBERUNIFIED_CATALOG` | Your UC catalog |
-| Variable | `CYBERUNIFIED_WAREHOUSE_ID` | SQL warehouse id (Genie only) |
-| Variable | `CYBERUNIFIED_OWNER_ROLE` | Lakebase owner role id (see Deploy) |
-| Variable | `CYBERUNIFIED_LAKEBASE_PROJECT` | Lakebase project id (e.g. `cyber-unified`) |
+|---|---|---|
+| Secret | `DATABRICKS_HOST` | That environment's workspace URL |
+| Secret | `DATABRICKS_CLIENT_ID` | The SP's application (client) ID |
+| Secret | `DATABRICKS_CLIENT_SECRET` | The SP's OAuth secret |
+| Variable | `LAKEBASE_OWNER_ROLE` | The SP's Lakebase Postgres role id (owner of the app database) |
 
-> The Databricks CLI auto-detects `DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` +
-> `DATABRICKS_CLIENT_SECRET` and performs the OAuth M2M token exchange itself —
-> the workflows just set these env vars, no login step needed.
+You never type a profile into GitHub: `.github/actions/databricks-auth` reads the
+profile name from `databricks.yml` (`targets.<t>.workspace.profile`) and writes
+these secrets under it, so the profile stays defined in **one** place. If an
+environment has no secrets, its jobs warn and skip instead of failing.
 
-Gate `prod` with a **protected GitHub environment** (`Settings → Environments`)
-with required reviewers, so promotion to prod needs human approval.
+### Cutting a release
 
-### The self-serve loop (per feature)
+```bash
+gh release create v0.2.0 --target main --generate-notes
+```
 
-1. **Branch off `main`** with a `feature/…` name and push it.
-2. **`ci.yml`** runs the gate (ruff, SPA build, migration + bundle validation).
-3. **`feature-deploy.yml`** forks a **paired Lakebase branch** off `production`
-   (its own copy-on-write snapshot of prod data + read-write endpoint). It does
-   **not** deploy a per-branch app — Databricks Apps are a per-environment
-   service, not per-PR previews (see below).
-4. **Test against the branch:** point the app at the fork via
-   `LAKEBASE_ENDPOINT_NAME` — run the app locally (dev-loop) or use the shared
-   **dev** app. The data is isolated; the app instance is shared.
-5. **Open a PR** → review + merge to `main`. Promotion to **prod** is a manual,
-   gated `workflow_dispatch` (`promote.yml`) against the protected `prod`
-   environment.
-6. **Close the PR** → `feature-teardown.yml` deletes the paired Lakebase branch.
+`release.yml` checks the tag is on `main`, then waits for your approval on `tst`.
+Once tst deploys, it waits again on `prd`. To re-deploy an existing tag, run
+**Release → Run workflow** with that tag.
 
-> **Why no app-per-branch?** Each Databricks App is its own long-running compute
-> + URL + per-user OAuth consent — spinning one up per branch is high cost for
-> little gain, and Apps have no native per-PR preview primitive. The valuable,
-> cheap isolation is the **Lakebase branch** (copy-on-write, fork/drop in
-> seconds); the app stays a shared per-environment service (`dev`, then `prod`).
+> **Why no app-per-PR?** Each Databricks App is its own long-running compute
+> + URL + per-user OAuth consent — spinning one up per PR is high cost for
+> little gain. The cheap, valuable isolation is the **Lakebase branch**
+> (copy-on-write, fork/drop in seconds): point `make local` at `pr-<N>`, or let the
+> Lakebase SCM extension pair your own git branch (see `.env.example`).
 
 ---
 
@@ -306,7 +330,7 @@ everything locally with zero Databricks dependencies:
 ```bash
 make install        # backend (pip -e) + frontend (npm)
 make build          # build the React SPA into app/frontend/dist
-make dev            # uvicorn on :8000 with the seed provider
+make local          # uvicorn on :8000 with the seed provider
 ```
 
 Regenerate the bundled demo CSVs (for inspection only — the seeder generates the
@@ -371,9 +395,9 @@ and the generic `/domain/<key>` page renders it.
 That's it — nav link, KPI tiles, trend charts, drill-down table, and Genie drawer
 all appear with **zero code**.
 
-> **On the sandbox only**, where no published view exists, add a
-> `setup/sandbox/mv_<key>.sql` to emulate one locally, then run
-> `make seed sandbox` + `make sandbox-metricview sandbox`. That is a dev
+> **On databricks_dev only**, where no published view exists, add a
+> `setup/sandbox/mv_<key>.sql` to emulate one, then run
+> `make seed dev` + `make sandbox-metricview dev`. That is a dev
 > convenience — it is never part of a deploy or of a real environment.
 
 ### Scale metrics within a domain

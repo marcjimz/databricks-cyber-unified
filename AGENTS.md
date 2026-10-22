@@ -53,18 +53,20 @@ staging-only demo domains and have been removed (git history preserves them).
 
 ```
 databricks.yml            Bundle root (name: cyber-unified): variables, targets, resources, group permissions
-  targets: databricks_sandbox (default, FEVM, SYNTHETIC) | edp_dev (Azure EDP DEV, REAL CyberArk source) | prod
+  targets: databricks_dev (default) | databricks_tst | databricks_prd  — the PROMOTION LANE: three side-by-side
+           stacks (today one FEVM workspace), distinct by resource name, repointed ONLY via workspace.profile
+           | edp_dev (Azure EDP DEV, REAL CyberArk source)
   resources: the APP + the Lakebase project ONLY — plus the gated seed job. NO pipeline, NO data-plane job.
 setup/sandbox/            SANDBOX-ONLY UTILITY (emulates what a real workspace already provides). NOT a bundle
                            resource, NOT a deploy step, and never run against a real target.
   phishing_source.sql      Pass-through view over the seeded synthetic gold.
   mv_phishing.sql          The emulated UC Metric View (CREATE VIEW WITH METRICS LANGUAGE YAML) + materialization.
   apply_metricview.py      Applies both .sql from the CLI against the warehouse; resolves catalog/schema/warehouse
-                           from `bundle summary`. Run via `make sandbox-metricview sandbox`, which HARD-REFUSES
-                           any non-sandbox target (these files issue DDL).
+                           from `bundle summary`. Run via `make sandbox-metricview dev`, which HARD-REFUSES
+                           any target but databricks_dev (these files issue DDL).
 scripts/
   seed_synthetic_gold.py   SANDBOX-ONLY, GATED synthetic gold seed (_GOLD_SCHEMAS). A spark_python_task run by
-                           `make seed sandbox` — NOT part of deploy, and a no-op unless load_synthetic_data=true
+                           `make seed dev` — NOT part of deploy, and a no-op unless load_synthetic_data=true
                            (which defaults FALSE). Replaced the old Lakeflow pipeline, which deployed to every
                            target (incl. customer workspaces that already have real tables) and failed graph
                            analysis when it defined no tables. Synthetic data is a DEV AID; never an app resource.
@@ -83,7 +85,7 @@ app/
   providers/
     metricview.py          PROD provider: queries the UC metric view with MEASURE() on the warehouse (OBO). GENERIC —
                            no domain names. Also serves the generic detail table (SELECT from the SAME metric view).
-    seed.py                LOCAL provider (make dev, zero workspace deps): computes ANY domain's measures + detail rows
+    seed.py                LOCAL provider (make local, zero workspace deps): computes ANY domain's measures + detail rows
                            from generator.py rows via DuckDB, using the SAME measure SQL from config. GENERIC.
     __init__.py            Provider factory (provider: "metricview" | "seed").
   api/                     FastAPI routers: config, health, metrics (scorecard + /metrics/{domain}), tables
@@ -92,44 +94,85 @@ app/
   frontend/                Vite + React SPA (config-driven; /domain/:key is one generic route). dist/ is COMMITTED.
   migrations/              Lakebase app-state migrations (preferences/chats/sessions) — app-owned RW state only.
   tests/
-    test_bundle_architecture.py  DURABLE GUARD SUITE (8 tests) — fails if a future change reintroduces a pipeline
+    test_bundle_architecture.py  DURABLE GUARD SUITE — fails if a future change reintroduces a pipeline
                            resource, a data-plane job / any sql_task, a metric_view built rather than named, view
                            DDL outside setup/sandbox/, ungated or default-on seeding, seeding inside deploy, a
-                           dangling ${resources.*}/${var.*} ref, or a real-data target that enables seeding.
+                           dangling ${resources.*}/${var.*} ref, a target other than dev that enables seeding,
+                           a promotion-lane target that pins a host / uses per-user state / collides on names,
+                           or a tst/prd deploy outside the environment-gated release workflow.
+    test_db_env.py         The Lakebase SCM extension's .env keys (LAKEBASE_HOST/DB_USERNAME/DB_NAME) reach the DSN.
+.github/
+  actions/databricks-auth/ Composite action: writes ~/.databrickscfg under the PROFILE NAME the target declares
+                           (targets.<t>.workspace.profile), from the GitHub environment's SP secrets.
+  workflows/ci.yml         PR gate: ruff + pytest (incl. guard suite), migrations, FE lint/build/dist-current,
+                           bundle validate databricks_dev.
+  workflows/pr-lakebase.yml  Paired Lakebase branch `pr-<N>` per same-repo PR (fork off dev's production; delete on close).
+  workflows/deploy.yml     REUSABLE deploy (validate -> deploy -> run app) in the caller's GitHub environment.
+  workflows/deploy-dev.yml Merge to main -> databricks_dev (no gate).
+  workflows/release.yml    Published GitHub Release (tag on main) -> databricks_tst -> databricks_prd, each behind
+                           its environment's required reviewer.
+  scripts/lakebase_branch.py  Fork/delete a Lakebase branch (used by pr-lakebase.yml).
+.env.example               Local .env in the Lakebase SCM extension's contract (the extension rewrites its branch block).
 README.md / SKILL.md       Deployment guide + design principles. MEMORY.md — dev log (gitignored).
 ```
 
 ## Command workflow
 
-Prereqs: Databricks CLI (autoscaling Lakebase support); authenticated to the
-target workspace (`databricks auth login --host <url>`). Targets:
-`databricks_sandbox` (default, FEVM, synthetic), `edp_dev` (Azure EDP DEV, real
-CyberArk source), `prod`.
+Prereqs: Databricks CLI (autoscaling Lakebase support); a CLI profile for the
+target workspace (`databricks auth login -p <profile> --host <url>`) whose name
+matches the target's `workspace.profile`. Targets: `databricks_dev` (default),
+`databricks_tst`, `databricks_prd` (the promotion lane; today all on the FEVM
+sandbox), `edp_dev` (Azure EDP DEV, real CyberArk source).
 
 The Makefile follows the bluebird idiom: the env is a POSITIONAL word (`make
-deploy sandbox`), mapped to the databricks.yml target (`sandbox` ->
-`databricks_sandbox`; `edp_dev`, `prod` as-is).
+deploy dev`), mapped to the databricks.yml target (`dev|tst|prd` ->
+`databricks_dev|tst|prd`; `edp_dev` as-is). `tst`/`prd` are RELEASE-ONLY:
+`make deploy|setup|app` refuses them outside CI (`FORCE=1` is break-glass).
+Local run is `make local` (not `make dev` — `dev` is the env word).
 
 ```bash
 # Local dev (zero workspace deps — seed provider computes KPIs from generator.py):
 make install            # installs .[dev] incl. duckdb (seed engine) + frontend deps
-make dev                # build SPA + uvicorn on :8000 (CYBERUNIFIED_PROVIDER=seed)
+make local              # build SPA + uvicorn on :8000 (CYBERUNIFIED_PROVIDER=seed)
 
 # Full deploy sequence in ONE target (validate -> deploy -> run app). NOTHING in the
 # data layer is touched, so a deploy succeeds/fails on DEPLOYMENT alone:
-make deploy sandbox     # FEVM, reads the sandbox's emulated metric view
+make deploy dev         # databricks_dev, reads the emulated metric view (CI does this on merge to main)
 make deploy edp_dev     # Azure EDP DEV, reads the customer's published metric view
-make setup sandbox      # FIRST-TIME on a fresh workspace: deploy x2 -> app
+make setup dev          # FIRST-TIME on a fresh workspace: deploy x2 -> app
 
 # Individual steps (same positional env):
-make validate sandbox   # bundle validate only
-make app sandbox        # deploy + (re)start the app
+make validate tst       # bundle validate only (fine for tst/prd too)
+make app dev            # deploy + (re)start the app
 
-# SANDBOX-ONLY utilities — they EMULATE what a real workspace already provides.
-# Neither is a deploy step; neither is needed by (or safe on) a real target:
-make seed sandbox              # gated synthetic gold (cyber_unified_seed_job); no-op unless load_synthetic_data=true
-make sandbox-metricview sandbox # publish the emulated metric view over that gold (refuses any other target)
+# SANDBOX utilities, databricks_dev ONLY — they EMULATE what a real workspace already
+# provides, in the data layer dev/tst/prd share. Neither is a deploy step:
+make seed dev                  # gated synthetic gold (cyber_unified_seed_job); no-op unless load_synthetic_data=true
+make sandbox-metricview dev    # publish the emulated metric view over that gold (refuses any other target)
 ```
+
+### CI/CD (GitHub Actions)
+
+branch → PR (`ci.yml` + a paired `pr-<N>` Lakebase branch) → merge to `main`
+(`deploy-dev.yml` → databricks_dev) → publish a GitHub Release from a tag on main
+(`release.yml` → databricks_tst, then databricks_prd).
+
+- **The human gates are GitHub environments.** `tst` and `prd` each have a
+  required reviewer and a `v*`-tags-only deployment rule; `dev` has neither. The
+  reusable `deploy.yml` job runs IN the caller's environment — that is what
+  makes the gate apply. Never deploy tst/prd from any other workflow (guard test).
+- **Auth = one service principal per environment** (OAuth M2M): environment
+  secrets `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`,
+  plus variable `LAKEBASE_OWNER_ROLE` (that SP's Lakebase role). The auth action
+  writes them under the target's profile name, so `databricks.yml` stays the
+  single place a profile is named. Missing secrets → the job warns and skips.
+- **Shared deploy state.** The lane's `root_path` is `/Workspace/Shared/...` so the
+  CI SP and a human deploying dev share ONE state; a per-user path makes the second
+  deployer collide on the app name. (The CLI warns that Shared is writable by all
+  workspace users — known trade-off.)
+- **Repointing to a customer** = edit the three `workspace.profile` values (and
+  `catalog`/`schema`/`warehouse_id` only if theirs differ), then set up the three
+  environments. No workflow edits.
 
 ### Deploy gotchas
 
@@ -141,14 +184,14 @@ make sandbox-metricview sandbox # publish the emulated metric view over that gol
   Re-run `deploy`, then start the app — that is what `make setup <env>` does.
 - **Job keys are full resource keys** (`cyber_unified_seed_job`, `cyber_unified_app`) — a
   bare prefix fails with "resource not found".
-- **`workspace.host` is a literal per target** — it configures auth, so DAB forbids
-  `${var}` interpolation on it. `databricks_sandbox` and `edp_dev` pin their hosts;
-  omit/override via `DATABRICKS_HOST` or `-p <profile>` when deploying elsewhere.
+- **`workspace.profile` / `workspace.host` are literals per target** — they configure
+  auth, so DAB forbids `${var}` interpolation on them. The promotion lane names a
+  profile (never a host); `edp_dev` pins its host.
 - **The metric view is NAMED, never built.** Repointing to a different environment
   is editing `domains[].metric_view.name` — nothing else. There is no source-table
   knob: the app doesn't know or care what the view is built over, which is exactly
   why it needs no privilege on the customer's federated source catalog. Publishing a
-  metric view is a SANDBOX utility (`make sandbox-metricview sandbox`), not a
+  metric view is a SANDBOX utility (`make sandbox-metricview dev`), not a
   bundle resource and not a deploy step.
 - **Materialization needs a clean view.** If you author a view (sandbox emulation, or
   advising a customer), keep it free of per-user access controls / invoker-dependent
@@ -193,7 +236,7 @@ Rules baked into the code (nothing hardcoded to a domain):
 - **Add a domain** = add a `domains:` entry whose `metric_view.name` points at the
   metric view that environment already publishes. That is the whole production step —
   no bundle resource, no `sql_task`, no `.py`/`.tsx` edits. `/domain/<key>` renders
-  automatically. *On the sandbox only*, if you want to emulate that view locally, add
+  automatically. *On databricks_dev only*, if you want to emulate that view locally, add
   a `setup/sandbox/mv_<key>.sql` and, if it needs synthetic data, a generator in
   `pipelines/lib/generator.py` + a `_GOLD_SCHEMAS` entry.
 - **A `day` dimension is mandatory** — the scorecard windows on
@@ -225,6 +268,10 @@ block reference `${var.manage_group}` / `${var.user_group}`):
   UC grant principals must be ACCOUNT groups (these are workspace groups). Grant the
   user group `USE CATALOG` + `USE SCHEMA` + `SELECT` on the catalog/schema so members
   can query the metric view. See README "Access control".
+- **CI deploys as a service principal** per GitHub environment (dev/tst/prd). It
+  needs workspace access to create apps/jobs/Lakebase projects and must be able to
+  grant the bundle's groups; it never reads KPI data (the app reads OBO). Release
+  approval = the `tst`/`prd` environments' required reviewers (README "CI/CD").
 
 ## Conventions
 
